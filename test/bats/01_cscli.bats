@@ -33,27 +33,27 @@ teardown() {
 
     # no "usage" output after every error
     rune -1 cscli blahblah
-    # error is displayed as log entry, not with print
-    assert_stderr --partial 'level=fatal msg="unknown command \"blahblah\" for \"cscli\""'
-    refute_stderr --partial 'unknown command "blahblah" for "cscli"'
+    # error is displayed with print, not as a log entry
+    assert_stderr --partial 'unknown command "blahblah" for "cscli"'
+    refute_stderr --partial 'level=fatal'
 }
 
 @test "cscli version" {
     rune -0 cscli version
-    assert_stderr --partial "version:"
-    assert_stderr --partial "Codename:"
-    assert_stderr --partial "BuildDate:"
-    assert_stderr --partial "GoVersion:"
-    assert_stderr --partial "Platform:"
-    assert_stderr --partial "Constraint_parser:"
-    assert_stderr --partial "Constraint_scenario:"
-    assert_stderr --partial "Constraint_api:"
-    assert_stderr --partial "Constraint_acquis:"
+    assert_output --partial "version:"
+    assert_output --partial "Codename:"
+    assert_output --partial "BuildDate:"
+    assert_output --partial "GoVersion:"
+    assert_output --partial "Platform:"
+    assert_output --partial "Constraint_parser:"
+    assert_output --partial "Constraint_scenario:"
+    assert_output --partial "Constraint_api:"
+    assert_output --partial "Constraint_acquis:"
 
     # should work without configuration file
-    rm "${CONFIG_YAML}"
+    rm "$CONFIG_YAML"
     rune -0 cscli version
-    assert_stderr --partial "version:"
+    assert_output --partial "version:"
 }
 
 @test "cscli help" {
@@ -62,7 +62,7 @@ teardown() {
     assert_line --regexp ".* help .* Help about any command"
 
     # should work without configuration file
-    rm "${CONFIG_YAML}"
+    rm "$CONFIG_YAML"
     rune -0 cscli help
     assert_line "Available Commands:"
 }
@@ -100,10 +100,14 @@ teardown() {
 
     # check that LAPI configuration is loaded (human and json, not shows in raw)
 
+    sock=$(config_get '.api.server.listen_socket')
+
     rune -0 cscli config show -o human
     assert_line --regexp ".*- URL +: http://127.0.0.1:8080/"
     assert_line --regexp ".*- Login +: githubciXXXXXXXXXXXXXXXXXXXXXXXX([a-zA-Z0-9]{16})?"
     assert_line --regexp ".*- Credentials File +: .*/local_api_credentials.yaml"
+    assert_line --regexp ".*- Listen URL +: 127.0.0.1:8080"
+    assert_line --regexp ".*- Listen Socket +: $sock"
 
     rune -0 cscli config show -o json
     rune -0 jq -c '.API.Client.Credentials | [.url,.login[0:32]]' <(output)
@@ -126,9 +130,8 @@ teardown() {
 	EOT
 }
 
-
 @test "cscli - required configuration paths" {
-    config=$(cat "${CONFIG_YAML}")
+    config=$(cat "$CONFIG_YAML")
     configdir=$(config_get '.config_paths.config_dir')
 
     # required configuration paths with no defaults
@@ -136,12 +139,12 @@ teardown() {
     config_set 'del(.config_paths)'
     rune -1 cscli hub list
     assert_stderr --partial 'no configuration paths provided'
-    echo "$config" > "${CONFIG_YAML}"
+    echo "$config" > "$CONFIG_YAML"
 
     config_set 'del(.config_paths.data_dir)'
     rune -1 cscli hub list
     assert_stderr --partial "please provide a data directory with the 'data_dir' directive in the 'config_paths' section"
-    echo "$config" > "${CONFIG_YAML}"
+    echo "$config" > "$CONFIG_YAML"
 
     # defaults
 
@@ -149,13 +152,13 @@ teardown() {
     rune -0 cscli hub list
     rune -0 cscli config show --key Config.ConfigPaths.HubDir
     assert_output "$configdir/hub"
-    echo "$config" > "${CONFIG_YAML}"
+    echo "$config" > "$CONFIG_YAML"
 
     config_set 'del(.config_paths.index_path)'
     rune -0 cscli hub list
     rune -0 cscli config show --key Config.ConfigPaths.HubIndexFile
     assert_output "$configdir/hub/.index.json"
-    echo "$config" > "${CONFIG_YAML}"
+    echo "$config" > "$CONFIG_YAML"
 }
 
 @test "cscli config show-yaml" {
@@ -178,108 +181,32 @@ teardown() {
     assert_stderr --partial "failed to backup config: while creating /dev/null/blah: mkdir /dev/null/blah: not a directory"
 
     # pick a dirpath
-    backupdir=$(TMPDIR="${BATS_TEST_TMPDIR}" mktemp -u)
+    backupdir=$(TMPDIR="$BATS_TEST_TMPDIR" mktemp -u)
 
     # succeed the first time
-    rune -0 cscli config backup "${backupdir}"
+    rune -0 cscli config backup "$backupdir"
     assert_stderr --partial "Starting configuration backup"
 
     # don't overwrite an existing backup
-    rune -1 cscli config backup "${backupdir}"
+    rune -1 cscli config backup "$backupdir"
     assert_stderr --partial "failed to backup config"
     assert_stderr --partial "file exists"
 
     SIMULATION_YAML="$(config_get '.config_paths.simulation_path')"
 
     # restore
-    rm "${SIMULATION_YAML}"
-    rune -0 cscli config restore "${backupdir}"
-    assert_file_exists "${SIMULATION_YAML}"
+    rm "$SIMULATION_YAML"
+    rune -0 cscli config restore "$backupdir"
+    assert_file_exists "$SIMULATION_YAML"
 
     # cleanup
     rm -rf -- "${backupdir:?}"
 
     # backup: detect missing files
-    rm "${SIMULATION_YAML}"
-    rune -1 cscli config backup "${backupdir}"
+    rm "$SIMULATION_YAML"
+    rune -1 cscli config backup "$backupdir"
     assert_stderr --regexp "failed to backup config: failed copy .* to .*: stat .*: no such file or directory"
     rm -rf -- "${backupdir:?}"
-}
-
-@test "cscli lapi status" {
-    rune -0 ./instance-crowdsec start
-    rune -0 cscli lapi status
-
-    assert_stderr --partial "Loaded credentials from"
-    assert_stderr --partial "Trying to authenticate with username"
-    assert_stderr --partial " on http://127.0.0.1:8080/"
-    assert_stderr --partial "You can successfully interact with Local API (LAPI)"
-}
-
-@test "cscli - missing LAPI credentials file" {
-    LOCAL_API_CREDENTIALS=$(config_get '.api.client.credentials_path')
-    rm -f "${LOCAL_API_CREDENTIALS}"
-    rune -1 cscli lapi status
-    assert_stderr --partial "loading api client: while reading yaml file: open ${LOCAL_API_CREDENTIALS}: no such file or directory"
-
-    rune -1 cscli alerts list
-    assert_stderr --partial "loading api client: while reading yaml file: open ${LOCAL_API_CREDENTIALS}: no such file or directory"
-
-    rune -1 cscli decisions list
-    assert_stderr --partial "loading api client: while reading yaml file: open ${LOCAL_API_CREDENTIALS}: no such file or directory"
-}
-
-@test "cscli - empty LAPI credentials file" {
-    LOCAL_API_CREDENTIALS=$(config_get '.api.client.credentials_path')
-    : > "${LOCAL_API_CREDENTIALS}"
-    rune -1 cscli lapi status
-    assert_stderr --partial "no credentials or URL found in api client configuration '${LOCAL_API_CREDENTIALS}'"
-
-    rune -1 cscli alerts list
-    assert_stderr --partial "no credentials or URL found in api client configuration '${LOCAL_API_CREDENTIALS}'"
-
-    rune -1 cscli decisions list
-    assert_stderr --partial "no credentials or URL found in api client configuration '${LOCAL_API_CREDENTIALS}'"
-}
-
-@test "cscli - missing LAPI client settings" {
-    config_set 'del(.api.client)'
-    rune -1 cscli lapi status
-    assert_stderr --partial "loading api client: no API client section in configuration"
-
-    rune -1 cscli alerts list
-    assert_stderr --partial "loading api client: no API client section in configuration"
-
-    rune -1 cscli decisions list
-    assert_stderr --partial "loading api client: no API client section in configuration"
-}
-
-@test "cscli - malformed LAPI url" {
-    LOCAL_API_CREDENTIALS=$(config_get '.api.client.credentials_path')
-    config_set "${LOCAL_API_CREDENTIALS}" '.url="http://127.0.0.1:-80"'
-
-    rune -1 cscli lapi status -o json
-    rune -0 jq -r '.msg' <(stderr)
-    assert_output 'parsing api url: parse "http://127.0.0.1:-80/": invalid port ":-80" after host'
-}
-
-@test "cscli - bad LAPI password" {
-    rune -0 ./instance-crowdsec start
-    LOCAL_API_CREDENTIALS=$(config_get '.api.client.credentials_path')
-    config_set "${LOCAL_API_CREDENTIALS}" '.password="meh"'
-
-    rune -1 cscli lapi status -o json
-    rune -0 jq -r '.msg' <(stderr)
-    assert_output 'failed to authenticate to Local API (LAPI): API error: incorrect Username or Password'
-}
-
-@test "cscli metrics" {
-    rune -0 ./instance-crowdsec start
-    rune -0 cscli lapi status
-    rune -0 cscli metrics
-    assert_output --partial "Route"
-    assert_output --partial '/v1/watchers/login'
-    assert_output --partial "Local API Metrics:"
 }
 
 @test "'cscli completion' with or without configuration file" {
@@ -292,7 +219,7 @@ teardown() {
     rune -0 cscli completion fish
     assert_output --partial "# fish completion for cscli"
 
-    rm "${CONFIG_YAML}"
+    rm "$CONFIG_YAML"
     rune -0 cscli completion bash
     assert_output --partial "# bash completion for cscli"
 }
@@ -336,16 +263,14 @@ teardown() {
 }
 
 @test "cscli doc" {
-    # generating documentation requires a directory named "doc"
-
     cd "$BATS_TEST_TMPDIR"
     rune -1 cscli doc
     refute_output
-    assert_stderr --regexp 'failed to generate cobra doc: open doc/.*: no such file or directory'
+    assert_stderr --regexp 'failed to generate cscli documentation: open doc/.*: no such file or directory'
 
     mkdir -p doc
     rune -0 cscli doc
-    refute_output
+    assert_output "Documentation generated in ./doc"
     refute_stderr
     assert_file_exists "doc/cscli.md"
     assert_file_not_exist "doc/cscli_setup.md"
@@ -355,15 +280,44 @@ teardown() {
     export CROWDSEC_FEATURE_CSCLI_SETUP="true"
     rune -0 cscli doc
     assert_file_exists "doc/cscli_setup.md"
+
+    # specify a target directory
+    mkdir -p "$BATS_TEST_TMPDIR/doc2"
+    rune -0 cscli doc --target "$BATS_TEST_TMPDIR/doc2"
+    assert_output "Documentation generated in $BATS_TEST_TMPDIR/doc2"
+    refute_stderr
+    assert_file_exists "$BATS_TEST_TMPDIR/doc2/cscli_setup.md"
+
 }
 
 @test "feature.yaml for subcommands" {
     # it is possible to enable subcommands with feature flags defined in feature.yaml
 
     rune -1 cscli setup
-    assert_stderr --partial 'unknown command \"setup\" for \"cscli\"'
+    assert_stderr --partial 'unknown command "setup" for "cscli"'
     CONFIG_DIR=$(dirname "$CONFIG_YAML")
     echo ' - cscli_setup' >> "$CONFIG_DIR"/feature.yaml
     rune -0 cscli setup
     assert_output --partial 'cscli setup [command]'
+}
+
+@test "cscli config feature-flags" {
+    # disabled
+    rune -0 cscli config feature-flags
+    assert_line '✗ cscli_setup: Enable cscli setup command (service detection)'
+
+    # enabled in feature.yaml
+    CONFIG_DIR=$(dirname "$CONFIG_YAML")
+    echo ' - cscli_setup' >> "$CONFIG_DIR"/feature.yaml
+    rune -0 cscli config feature-flags
+    assert_line '✓ cscli_setup: Enable cscli setup command (service detection)'
+
+    # enabled in environment
+    # shellcheck disable=SC2031
+    export CROWDSEC_FEATURE_CSCLI_SETUP="true"
+    rune -0 cscli config feature-flags
+    assert_line '✓ cscli_setup: Enable cscli setup command (service detection)'
+
+    # there are no retired features
+    rune -0 cscli config feature-flags --retired
 }

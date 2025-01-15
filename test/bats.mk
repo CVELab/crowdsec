@@ -38,6 +38,7 @@ define ENV :=
 export TEST_DIR="$(TEST_DIR)"
 export LOCAL_DIR="$(LOCAL_DIR)"
 export BIN_DIR="$(BIN_DIR)"
+# append .min to the binary names to use the minimal profile
 export CROWDSEC="$(CROWDSEC)"
 export CSCLI="$(CSCLI)"
 export CONFIG_YAML="$(CONFIG_DIR)/config.yaml"
@@ -66,15 +67,20 @@ bats-check-requirements:  ## Check dependencies for functional tests
 	@$(TEST_DIR)/bin/check-requirements
 
 bats-update-tools:  ## Install/update tools required for functional tests
-	# yq v4.40.4
-	GOBIN=$(TEST_DIR)/tools go install github.com/mikefarah/yq/v4@1c3d55106075bd37df197b4bc03cb4a413fdb903
-	# cfssl v1.6.4
-	GOBIN=$(TEST_DIR)/tools go install github.com/cloudflare/cfssl/cmd/cfssl@b4d0d877cac528f63db39dfb62d5c96cd3a32a0b
-	GOBIN=$(TEST_DIR)/tools go install github.com/cloudflare/cfssl/cmd/cfssljson@b4d0d877cac528f63db39dfb62d5c96cd3a32a0b
+	# yq v4.44.3
+	GOBIN=$(TEST_DIR)/tools go install github.com/mikefarah/yq/v4@bbdd97482f2d439126582a59689eb1c855944955
+	# cfssl v1.6.5
+	GOBIN=$(TEST_DIR)/tools go install github.com/cloudflare/cfssl/cmd/cfssl@96259aa29c9cc9b2f4e04bad7d4bc152e5405dda
+	GOBIN=$(TEST_DIR)/tools go install github.com/cloudflare/cfssl/cmd/cfssljson@96259aa29c9cc9b2f4e04bad7d4bc152e5405dda
 
 # Build and installs crowdsec in a local directory. Rebuilds if already exists.
 bats-build: bats-environment  ## Build binaries for functional tests
 	@$(MKDIR) $(BIN_DIR) $(LOG_DIR) $(PID_DIR) $(BATS_PLUGIN_DIR)
+	# minimal profile
+	@$(MAKE) build DEBUG=1 TEST_COVERAGE=$(TEST_COVERAGE) DEFAULT_CONFIGDIR=$(CONFIG_DIR) DEFAULT_DATADIR=$(DATA_DIR) BUILD_PROFILE=minimal
+	@install -m 0755 cmd/crowdsec/crowdsec $(BIN_DIR)/crowdsec.min
+	@install -m 0755 cmd/crowdsec-cli/cscli $(BIN_DIR)/cscli.min
+	# default profile
 	@$(MAKE) build DEBUG=1 TEST_COVERAGE=$(TEST_COVERAGE) DEFAULT_CONFIGDIR=$(CONFIG_DIR) DEFAULT_DATADIR=$(DATA_DIR)
 	@install -m 0755 cmd/crowdsec/crowdsec cmd/crowdsec-cli/cscli $(BIN_DIR)/
 	@install -m 0755 cmd/notification-*/notification-* $(BATS_PLUGIN_DIR)/

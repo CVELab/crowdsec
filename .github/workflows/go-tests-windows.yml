@@ -34,32 +34,33 @@ jobs:
     - name: "Set up Go"
       uses: actions/setup-go@v5
       with:
-        go-version: "1.21.6"
+        go-version: "1.23"
 
     - name: Build
       run: |
         make build BUILD_RE2_WASM=1
 
+    - name: Generate codecov configuration
+      run: |
+          .github/generate-codecov-yml.sh >> .github/codecov.yml
+
     - name: Run tests
       run: |
         go install github.com/kyoh86/richgo@v0.3.10
-        go test -coverprofile coverage.out -covermode=atomic ./... > out.txt
+        go test -tags expr_debug -coverprofile coverage.out -covermode=atomic ./... > out.txt
         if(!$?) { cat out.txt | sed 's/ *coverage:.*of statements in.*//' | richgo testfilter; Exit 1 }
         cat out.txt | sed 's/ *coverage:.*of statements in.*//' | richgo testfilter
 
     - name: Upload unit coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         files: coverage.out
         flags: unit-windows
+        token: ${{ secrets.CODECOV_TOKEN }}
 
     - name: golangci-lint
-      uses: golangci/golangci-lint-action@v3
+      uses: golangci/golangci-lint-action@v6
       with:
-        version: v1.55
+        version: v1.62
         args: --issues-exit-code=1 --timeout 10m
         only-new-issues: false
-        # the cache is already managed above, enabling it here
-        # gives errors when extracting
-        skip-pkg-cache: true
-        skip-build-cache: true

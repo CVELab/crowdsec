@@ -50,8 +50,6 @@ func TestRegisterFeature(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
-
 		t.Run("", func(t *testing.T) {
 			fr := fflag.FeatureRegister{EnvPrefix: "FFLAG_TEST_"}
 			err := fr.RegisterFeature(&tc.feature)
@@ -112,7 +110,6 @@ func TestGetFeature(t *testing.T) {
 	fr := setUp(t)
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := fr.GetFeature(tc.feature)
 			cstest.RequireErrorMessage(t, err, tc.expectedErr)
@@ -145,7 +142,6 @@ func TestIsEnabled(t *testing.T) {
 	fr := setUp(t)
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			feat, err := fr.GetFeature(tc.feature)
 			require.NoError(t, err)
@@ -204,7 +200,6 @@ func TestFeatureSet(t *testing.T) {
 	fr := setUp(t)
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			feat, err := fr.GetFeature(tc.feature)
 			cstest.RequireErrorMessage(t, err, tc.expectedGetErr)
@@ -284,7 +279,6 @@ func TestSetFromEnv(t *testing.T) {
 	fr := setUp(t)
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			logger, hook := logtest.NewNullLogger()
 			logger.SetLevel(logrus.DebugLevel)
@@ -344,7 +338,6 @@ func TestSetFromYaml(t *testing.T) {
 	fr := setUp(t)
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			logger, hook := logtest.NewNullLogger()
 			logger.SetLevel(logrus.DebugLevel)
@@ -383,11 +376,13 @@ func TestGetEnabledFeatures(t *testing.T) {
 
 	feat1, err := fr.GetFeature("new_standard")
 	require.NoError(t, err)
-	feat1.Set(true)
+	err = feat1.Set(true)
+	require.Error(t, err, "the flag is deprecated")
 
 	feat2, err := fr.GetFeature("experimental1")
 	require.NoError(t, err)
-	feat2.Set(true)
+	err = feat2.Set(true)
+	require.NoError(t, err)
 
 	expected := []string{
 		"experimental1",

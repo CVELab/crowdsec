@@ -1,6 +1,11 @@
 package cwhub
 
+// XXX: these tests are obsolete
+
+/*
+
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -9,8 +14,10 @@ import (
 )
 
 func testInstall(hub *Hub, t *testing.T, item *Item) {
+	ctx := context.Background()
+
 	// Install the parser
-	_, err := item.downloadLatest(false, false)
+	_, err := item.downloadLatest(ctx, false, false)
 	require.NoError(t, err, "failed to download %s", item.Name)
 
 	err = hub.localSync()
@@ -35,7 +42,8 @@ func testTaint(hub *Hub, t *testing.T, item *Item) {
 	// truncate the file
 	f, err := os.Create(item.State.LocalPath)
 	require.NoError(t, err)
-	f.Close()
+	err = f.Close()
+	require.NoError(t, err)
 
 	// Local sync and check status
 	err = hub.localSync()
@@ -47,8 +55,10 @@ func testTaint(hub *Hub, t *testing.T, item *Item) {
 func testUpdate(hub *Hub, t *testing.T, item *Item) {
 	assert.False(t, item.State.UpToDate, "%s should not be up-to-date", item.Name)
 
+	ctx := context.Background()
+
 	// Update it + check status
-	_, err := item.downloadLatest(true, true)
+	_, err := item.downloadLatest(ctx, true, true)
 	require.NoError(t, err, "failed to update %s", item.Name)
 
 	// Local sync and check status
@@ -97,7 +107,7 @@ func TestInstallParser(t *testing.T) {
 	 - force update it
 	 - check its status
 	 - remove it
-	*/
+	*
 	hub := envSetup(t)
 
 	// map iteration is random by itself
@@ -120,7 +130,7 @@ func TestInstallCollection(t *testing.T) {
 	 - force update it
 	 - check its status
 	 - remove it
-	*/
+	*
 	hub := envSetup(t)
 
 	// map iteration is random by itself
@@ -133,3 +143,5 @@ func TestInstallCollection(t *testing.T) {
 		break
 	}
 }
+
+*/

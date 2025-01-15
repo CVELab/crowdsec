@@ -30,17 +30,21 @@ teardown() {
 }
 
 @test "don't overwrite local credentials by default" {
-    rune -1 cscli machines add local -a -o json
-    rune -0 jq -r '.msg' <(stderr)
-    assert_output --partial 'already exists: please remove it, use "--force" or specify a different file with "-f"'
+    rune -1 cscli machines add local -a
+    assert_stderr --partial 'already exists: please remove it, use "--force" or specify a different file with "-f"'
     rune -0 cscli machines add local -a --force
-    assert_output --partial "Machine 'local' successfully added to the local API."
+    assert_stderr --partial "Machine 'local' successfully added to the local API."
+}
+
+@test "passwords have a size limit" {
+    rune -1 cscli machines add local --password "$(printf '%73s' '' | tr ' ' x)"
+    assert_stderr --partial "password too long (max 72 characters)"
 }
 
 @test "add a new machine and delete it" {
     rune -0 cscli machines add -a -f /dev/null CiTestMachine -o human
-    assert_output --partial "Machine 'CiTestMachine' successfully added to the local API"
-    assert_output --partial "API credentials written to '/dev/null'"
+    assert_stderr --partial "Machine 'CiTestMachine' successfully added to the local API"
+    assert_stderr --partial "API credentials written to '/dev/null'"
 
     # we now have two machines
     rune -0 cscli machines list -o json
@@ -55,6 +59,38 @@ teardown() {
     rune -0 cscli machines list -o json
     rune -0 jq '. | length' <(output)
     assert_output 1
+}
+
+@test "delete non-existent machine" {
+    # this is not a fatal error, won't halt a script with -e
+    rune -0 cscli machines delete something
+    assert_stderr --partial "unable to delete machine: 'something' does not exist"
+    rune -0 cscli machines delete something --ignore-missing
+    refute_stderr
+}
+
+@test "machines [delete|inspect] has autocompletion" {
+    rune -0 cscli machines add -a -f /dev/null foo1
+    rune -0 cscli machines add -a -f /dev/null foo2
+    rune -0 cscli machines add -a -f /dev/null bar
+    rune -0 cscli machines add -a -f /dev/null baz
+    rune -0 cscli __complete machines delete 'foo'
+    assert_line --index 0 'foo1'
+    assert_line --index 1 'foo2'
+    refute_line 'bar'
+    refute_line 'baz'
+    rune -0 cscli __complete machines inspect 'foo'
+    assert_line --index 0 'foo1'
+    assert_line --index 1 'foo2'
+    refute_line 'bar'
+    refute_line 'baz'
+}
+
+@test "heartbeat is initially null" {
+    rune -0 cscli machines add foo --auto --file /dev/null
+    rune -0 cscli machines list -o json
+    rune -0 yq '.[] | select(.machineId == "foo") | .last_heartbeat' <(output)
+    assert_output null
 }
 
 @test "register, validate and then remove a machine" {
@@ -84,4 +120,21 @@ teardown() {
     rune -0 cscli machines list -o json
     rune -0 jq '. | length' <(output)
     assert_output 1
+}
+
+@test "cscli machines prune" {
+    rune -0 cscli metrics
+
+    # if the fixture has been created some time ago,
+    # the machines may be old enough to trigger a user prompt.
+    # make sure the prune duration is high enough.
+    rune -0 cscli machines prune --duration 1000000h
+    assert_output 'No machines to prune.'
+
+    rune -0 cscli machines list -o json
+    rune -0 jq -r '.[-1].machineId' <(output)
+    rune -0 cscli machines delete "$output"
+
+    rune -0 cscli machines prune
+    assert_output 'No machines to prune.'
 }

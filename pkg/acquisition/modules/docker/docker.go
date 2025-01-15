@@ -3,6 +3,7 @@ package dockeracquisition
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	dockerTypes "github.com/docker/docker/api/types"
+	dockerContainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
@@ -41,11 +43,12 @@ type DockerConfiguration struct {
 	ContainerID                       []string `yaml:"container_id"`
 	ContainerNameRegexp               []string `yaml:"container_name_regexp"`
 	ContainerIDRegexp                 []string `yaml:"container_id_regexp"`
-	ForceInotify                      bool     `yaml:"force_inotify"`
+	UseContainerLabels                bool     `yaml:"use_container_labels"`
 	configuration.DataSourceCommonCfg `yaml:",inline"`
 }
 
 type DockerSource struct {
+	metricsLevel          int
 	Config                DockerConfiguration
 	runningContainerState map[string]*ContainerConfig
 	compiledContainerName []*regexp.Regexp
@@ -54,7 +57,7 @@ type DockerSource struct {
 	logger                *log.Entry
 	Client                client.CommonAPIClient
 	t                     *tomb.Tomb
-	containerLogsOptions  *dockerTypes.ContainerLogsOptions
+	containerLogsOptions  *dockerContainer.LogsOptions
 }
 
 type ContainerConfig struct {
@@ -86,8 +89,12 @@ func (d *DockerSource) UnmarshalConfig(yamlConfig []byte) error {
 		d.logger.Tracef("DockerAcquisition configuration: %+v", d.Config)
 	}
 
-	if len(d.Config.ContainerName) == 0 && len(d.Config.ContainerID) == 0 && len(d.Config.ContainerIDRegexp) == 0 && len(d.Config.ContainerNameRegexp) == 0 {
-		return fmt.Errorf("no containers names or containers ID configuration provided")
+	if len(d.Config.ContainerName) == 0 && len(d.Config.ContainerID) == 0 && len(d.Config.ContainerIDRegexp) == 0 && len(d.Config.ContainerNameRegexp) == 0 && !d.Config.UseContainerLabels {
+		return errors.New("no containers names or containers ID configuration provided")
+	}
+
+	if d.Config.UseContainerLabels && (len(d.Config.ContainerName) > 0 || len(d.Config.ContainerID) > 0 || len(d.Config.ContainerIDRegexp) > 0 || len(d.Config.ContainerNameRegexp) > 0) {
+		return errors.New("use_container_labels and container_name, container_id, container_id_regexp, container_name_regexp are mutually exclusive")
 	}
 
 	d.CheckIntervalDuration, err = time.ParseDuration(d.Config.CheckInterval)
@@ -98,6 +105,7 @@ func (d *DockerSource) UnmarshalConfig(yamlConfig []byte) error {
 	if d.Config.Mode == "" {
 		d.Config.Mode = configuration.TAIL_MODE
 	}
+
 	if d.Config.Mode != configuration.CAT_MODE && d.Config.Mode != configuration.TAIL_MODE {
 		return fmt.Errorf("unsupported mode %s for docker datasource", d.Config.Mode)
 	}
@@ -114,7 +122,7 @@ func (d *DockerSource) UnmarshalConfig(yamlConfig []byte) error {
 		d.Config.Since = time.Now().UTC().Format(time.RFC3339)
 	}
 
-	d.containerLogsOptions = &dockerTypes.ContainerLogsOptions{
+	d.containerLogsOptions = &dockerContainer.LogsOptions{
 		ShowStdout: d.Config.FollowStdout,
 		ShowStderr: d.Config.FollowStdErr,
 		Follow:     true,
@@ -128,8 +136,9 @@ func (d *DockerSource) UnmarshalConfig(yamlConfig []byte) error {
 	return nil
 }
 
-func (d *DockerSource) Configure(yamlConfig []byte, logger *log.Entry) error {
+func (d *DockerSource) Configure(yamlConfig []byte, logger *log.Entry, MetricsLevel int) error {
 	d.logger = logger
+	d.metricsLevel = MetricsLevel
 
 	err := d.UnmarshalConfig(yamlConfig)
 	if err != nil {
@@ -140,18 +149,19 @@ func (d *DockerSource) Configure(yamlConfig []byte, logger *log.Entry) error {
 
 	d.logger.Tracef("Actual DockerAcquisition configuration %+v", d.Config)
 
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return err
+	opts := []client.Opt{
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
 	}
 
 	if d.Config.DockerHost != "" {
-		err = client.WithHost(d.Config.DockerHost)(dockerClient)
-		if err != nil {
-			return err
-		}
+		opts = append(opts, client.WithHost(d.Config.DockerHost))
 	}
-	d.Client = dockerClient
+
+	d.Client, err = client.NewClientWithOpts(opts...)
+	if err != nil {
+		return err
+	}
 
 	_, err = d.Client.Info(context.Background())
 	if err != nil {
@@ -164,7 +174,12 @@ func (d *DockerSource) Configure(yamlConfig []byte, logger *log.Entry) error {
 func (d *DockerSource) ConfigureByDSN(dsn string, labels map[string]string, logger *log.Entry, uuid string) error {
 	var err error
 
-	if !strings.HasPrefix(dsn, d.GetName()+"://") {
+	parsedURL, err := url.Parse(dsn)
+	if err != nil {
+		return fmt.Errorf("failed to parse DSN %s: %w", dsn, err)
+	}
+
+	if parsedURL.Scheme != d.GetName() {
 		return fmt.Errorf("invalid DSN %s for docker source, must start with %s://", dsn, d.GetName())
 	}
 
@@ -181,46 +196,34 @@ func (d *DockerSource) ConfigureByDSN(dsn string, labels map[string]string, logg
 	d.logger = logger
 	d.Config.Labels = labels
 
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return err
+	opts := []client.Opt{
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
 	}
 
-	d.containerLogsOptions = &dockerTypes.ContainerLogsOptions{
+	d.containerLogsOptions = &dockerContainer.LogsOptions{
 		ShowStdout: d.Config.FollowStdout,
 		ShowStderr: d.Config.FollowStdErr,
 		Follow:     false,
 	}
-	dsn = strings.TrimPrefix(dsn, d.GetName()+"://")
-	args := strings.Split(dsn, "?")
 
-	if len(args) == 0 {
-		return fmt.Errorf("invalid dsn: %s", dsn)
-	}
+	containerNameOrID := parsedURL.Host
 
-	if len(args) == 1 && args[0] == "" {
+	if containerNameOrID == "" {
 		return fmt.Errorf("empty %s DSN", d.GetName()+"://")
 	}
-	d.Config.ContainerName = append(d.Config.ContainerName, args[0])
+
+	d.Config.ContainerName = append(d.Config.ContainerName, containerNameOrID)
 	// we add it as an ID also so user can provide docker name or docker ID
-	d.Config.ContainerID = append(d.Config.ContainerID, args[0])
+	d.Config.ContainerID = append(d.Config.ContainerID, containerNameOrID)
 
-	// no parameters
-	if len(args) == 1 {
-		d.Client = dockerClient
-		return nil
-	}
-
-	parameters, err := url.ParseQuery(args[1])
-	if err != nil {
-		return fmt.Errorf("while parsing parameters %s: %w", dsn, err)
-	}
+	parameters := parsedURL.Query()
 
 	for k, v := range parameters {
 		switch k {
 		case "log_level":
 			if len(v) != 1 {
-				return fmt.Errorf("only one 'log_level' parameters is required, not many")
+				return errors.New("only one 'log_level' parameters is required, not many")
 			}
 			lvl, err := log.ParseLevel(v[0])
 			if err != nil {
@@ -229,17 +232,17 @@ func (d *DockerSource) ConfigureByDSN(dsn string, labels map[string]string, logg
 			d.logger.Logger.SetLevel(lvl)
 		case "until":
 			if len(v) != 1 {
-				return fmt.Errorf("only one 'until' parameters is required, not many")
+				return errors.New("only one 'until' parameters is required, not many")
 			}
 			d.containerLogsOptions.Until = v[0]
 		case "since":
 			if len(v) != 1 {
-				return fmt.Errorf("only one 'since' parameters is required, not many")
+				return errors.New("only one 'since' parameters is required, not many")
 			}
 			d.containerLogsOptions.Since = v[0]
 		case "follow_stdout":
 			if len(v) != 1 {
-				return fmt.Errorf("only one 'follow_stdout' parameters is required, not many")
+				return errors.New("only one 'follow_stdout' parameters is required, not many")
 			}
 			followStdout, err := strconv.ParseBool(v[0])
 			if err != nil {
@@ -249,7 +252,7 @@ func (d *DockerSource) ConfigureByDSN(dsn string, labels map[string]string, logg
 			d.containerLogsOptions.ShowStdout = followStdout
 		case "follow_stderr":
 			if len(v) != 1 {
-				return fmt.Errorf("only one 'follow_stderr' parameters is required, not many")
+				return errors.New("only one 'follow_stderr' parameters is required, not many")
 			}
 			followStdErr, err := strconv.ParseBool(v[0])
 			if err != nil {
@@ -259,14 +262,17 @@ func (d *DockerSource) ConfigureByDSN(dsn string, labels map[string]string, logg
 			d.containerLogsOptions.ShowStderr = followStdErr
 		case "docker_host":
 			if len(v) != 1 {
-				return fmt.Errorf("only one 'docker_host' parameters is required, not many")
+				return errors.New("only one 'docker_host' parameters is required, not many")
 			}
-			if err := client.WithHost(v[0])(dockerClient); err != nil {
-				return err
-			}
+			opts = append(opts, client.WithHost(v[0]))
 		}
 	}
-	d.Client = dockerClient
+
+	d.Client, err = client.NewClientWithOpts(opts...)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -280,35 +286,44 @@ func (d *DockerSource) SupportedModes() []string {
 }
 
 // OneShotAcquisition reads a set of file and returns when done
-func (d *DockerSource) OneShotAcquisition(out chan types.Event, t *tomb.Tomb) error {
+func (d *DockerSource) OneShotAcquisition(ctx context.Context, out chan types.Event, t *tomb.Tomb) error {
 	d.logger.Debug("In oneshot")
-	runningContainer, err := d.Client.ContainerList(context.Background(), dockerTypes.ContainerListOptions{})
+
+	runningContainers, err := d.Client.ContainerList(ctx, dockerContainer.ListOptions{})
 	if err != nil {
 		return err
 	}
+
 	foundOne := false
-	for _, container := range runningContainer {
+
+	for _, container := range runningContainers {
 		if _, ok := d.runningContainerState[container.ID]; ok {
 			d.logger.Debugf("container with id %s is already being read from", container.ID)
 			continue
 		}
-		if containerConfig, ok := d.EvalContainer(container); ok {
+
+		if containerConfig := d.EvalContainer(ctx, container); containerConfig != nil {
 			d.logger.Infof("reading logs from container %s", containerConfig.Name)
 			d.logger.Debugf("logs options: %+v", *d.containerLogsOptions)
-			dockerReader, err := d.Client.ContainerLogs(context.Background(), containerConfig.ID, *d.containerLogsOptions)
+
+			dockerReader, err := d.Client.ContainerLogs(ctx, containerConfig.ID, *d.containerLogsOptions)
 			if err != nil {
 				d.logger.Errorf("unable to read logs from container: %+v", err)
 				return err
 			}
+
 			// we use this library to normalize docker API logs (cf. https://ahmet.im/blog/docker-logs-api-binary-format-explained/)
 			foundOne = true
+
 			var scanner *bufio.Scanner
+
 			if containerConfig.Tty {
 				scanner = bufio.NewScanner(dockerReader)
 			} else {
 				reader := dlog.NewReader(dockerReader)
 				scanner = bufio.NewScanner(reader)
 			}
+
 			for scanner.Scan() {
 				select {
 				case <-t.Dying():
@@ -318,6 +333,7 @@ func (d *DockerSource) OneShotAcquisition(out chan types.Event, t *tomb.Tomb) er
 					if line == "" {
 						continue
 					}
+
 					l := types.Line{}
 					l.Raw = line
 					l.Labels = d.Config.Labels
@@ -325,16 +341,25 @@ func (d *DockerSource) OneShotAcquisition(out chan types.Event, t *tomb.Tomb) er
 					l.Src = containerConfig.Name
 					l.Process = true
 					l.Module = d.GetName()
-					linesRead.With(prometheus.Labels{"source": containerConfig.Name}).Inc()
-					evt := types.Event{Line: l, Process: true, Type: types.LOG, ExpectMode: types.TIMEMACHINE}
+
+					if d.metricsLevel != configuration.METRICS_NONE {
+						linesRead.With(prometheus.Labels{"source": containerConfig.Name}).Inc()
+					}
+
+					evt := types.MakeEvent(true, types.LOG, true)
+					evt.Line = l
+					evt.Process = true
+					evt.Type = types.LOG
 					out <- evt
 					d.logger.Debugf("Sent line to parsing: %+v", evt.Line.Raw)
 				}
 			}
+
 			err = scanner.Err()
 			if err != nil {
 				d.logger.Errorf("Got error from docker read: %s", err)
 			}
+
 			d.runningContainerState[container.ID] = containerConfig
 		}
 	}
@@ -364,54 +389,116 @@ func (d *DockerSource) CanRun() error {
 	return nil
 }
 
-func (d *DockerSource) getContainerTTY(containerId string) bool {
-	containerDetails, err := d.Client.ContainerInspect(context.Background(), containerId)
+func (d *DockerSource) getContainerTTY(ctx context.Context, containerId string) bool {
+	containerDetails, err := d.Client.ContainerInspect(ctx, containerId)
 	if err != nil {
 		return false
 	}
+
 	return containerDetails.Config.Tty
 }
 
-func (d *DockerSource) EvalContainer(container dockerTypes.Container) (*ContainerConfig, bool) {
+func (d *DockerSource) getContainerLabels(ctx context.Context, containerId string) map[string]interface{} {
+	containerDetails, err := d.Client.ContainerInspect(ctx, containerId)
+	if err != nil {
+		return map[string]interface{}{}
+	}
+
+	return parseLabels(containerDetails.Config.Labels)
+}
+
+func (d *DockerSource) EvalContainer(ctx context.Context, container dockerTypes.Container) *ContainerConfig {
 	for _, containerID := range d.Config.ContainerID {
 		if containerID == container.ID {
-			return &ContainerConfig{ID: container.ID, Name: container.Names[0], Labels: d.Config.Labels, Tty: d.getContainerTTY(container.ID)}, true
+			return &ContainerConfig{ID: container.ID, Name: container.Names[0], Labels: d.Config.Labels, Tty: d.getContainerTTY(ctx, container.ID)}
 		}
 	}
 
 	for _, containerName := range d.Config.ContainerName {
 		for _, name := range container.Names {
-			if strings.HasPrefix(name, "/") && len(name) > 0 {
+			if strings.HasPrefix(name, "/") && name != "" {
 				name = name[1:]
 			}
+
 			if name == containerName {
-				return &ContainerConfig{ID: container.ID, Name: name, Labels: d.Config.Labels, Tty: d.getContainerTTY(container.ID)}, true
+				return &ContainerConfig{ID: container.ID, Name: name, Labels: d.Config.Labels, Tty: d.getContainerTTY(ctx, container.ID)}
 			}
 		}
-
 	}
 
 	for _, cont := range d.compiledContainerID {
 		if matched := cont.MatchString(container.ID); matched {
-			return &ContainerConfig{ID: container.ID, Name: container.Names[0], Labels: d.Config.Labels, Tty: d.getContainerTTY(container.ID)}, true
+			return &ContainerConfig{ID: container.ID, Name: container.Names[0], Labels: d.Config.Labels, Tty: d.getContainerTTY(ctx, container.ID)}
 		}
 	}
 
 	for _, cont := range d.compiledContainerName {
 		for _, name := range container.Names {
 			if matched := cont.MatchString(name); matched {
-				return &ContainerConfig{ID: container.ID, Name: name, Labels: d.Config.Labels, Tty: d.getContainerTTY(container.ID)}, true
+				return &ContainerConfig{ID: container.ID, Name: name, Labels: d.Config.Labels, Tty: d.getContainerTTY(ctx, container.ID)}
 			}
 		}
-
 	}
 
-	return &ContainerConfig{}, false
+	if d.Config.UseContainerLabels {
+		parsedLabels := d.getContainerLabels(ctx, container.ID)
+		if len(parsedLabels) == 0 {
+			d.logger.Tracef("container has no 'crowdsec' labels set, ignoring container: %s", container.ID)
+			return nil
+		}
+
+		if _, ok := parsedLabels["enable"]; !ok {
+			d.logger.Errorf("container has 'crowdsec' labels set but no 'crowdsec.enable' key found")
+			return nil
+		}
+
+		enable, ok := parsedLabels["enable"].(string)
+		if !ok {
+			d.logger.Error("container has 'crowdsec.enable' label set but it's not a string")
+			return nil
+		}
+
+		if strings.ToLower(enable) != "true" {
+			d.logger.Debugf("container has 'crowdsec.enable' label not set to true ignoring container: %s", container.ID)
+			return nil
+		}
+
+		if _, ok = parsedLabels["labels"]; !ok {
+			d.logger.Error("container has 'crowdsec.enable' label set to true but no 'labels' keys found")
+			return nil
+		}
+
+		labelsTypeCast, ok := parsedLabels["labels"].(map[string]interface{})
+		if !ok {
+			d.logger.Error("container has 'crowdsec.enable' label set to true but 'labels' is not a map")
+			return nil
+		}
+
+		d.logger.Debugf("container labels %+v", labelsTypeCast)
+
+		labels := make(map[string]string)
+
+		for k, v := range labelsTypeCast {
+			if v, ok := v.(string); ok {
+				log.Debugf("label %s is a string with value %s", k, v)
+				labels[k] = v
+
+				continue
+			}
+
+			d.logger.Errorf("label %s is not a string", k)
+		}
+
+		return &ContainerConfig{ID: container.ID, Name: container.Names[0], Labels: labels, Tty: d.getContainerTTY(ctx, container.ID)}
+	}
+
+	return nil
 }
 
-func (d *DockerSource) WatchContainer(monitChan chan *ContainerConfig, deleteChan chan *ContainerConfig) error {
+func (d *DockerSource) WatchContainer(ctx context.Context, monitChan chan *ContainerConfig, deleteChan chan *ContainerConfig) error {
 	ticker := time.NewTicker(d.CheckIntervalDuration)
 	d.logger.Infof("Container watcher started, interval: %s", d.CheckIntervalDuration.String())
+
 	for {
 		select {
 		case <-d.t.Dying():
@@ -420,33 +507,38 @@ func (d *DockerSource) WatchContainer(monitChan chan *ContainerConfig, deleteCha
 		case <-ticker.C:
 			// to track for garbage collection
 			runningContainersID := make(map[string]bool)
-			runningContainer, err := d.Client.ContainerList(context.Background(), dockerTypes.ContainerListOptions{})
+
+			runningContainers, err := d.Client.ContainerList(ctx, dockerContainer.ListOptions{})
 			if err != nil {
 				if strings.Contains(strings.ToLower(err.Error()), "cannot connect to the docker daemon at") {
 					for idx, container := range d.runningContainerState {
 						if d.runningContainerState[idx].t.Alive() {
 							d.logger.Infof("killing tail for container %s", container.Name)
 							d.runningContainerState[idx].t.Kill(nil)
+
 							if err := d.runningContainerState[idx].t.Wait(); err != nil {
 								d.logger.Infof("error while waiting for death of %s : %s", container.Name, err)
 							}
 						}
+
 						delete(d.runningContainerState, idx)
 					}
 				} else {
 					log.Errorf("container list err: %s", err)
 				}
+
 				continue
 			}
 
-			for _, container := range runningContainer {
+			for _, container := range runningContainers {
 				runningContainersID[container.ID] = true
 
 				// don't need to re eval an already monitored container
 				if _, ok := d.runningContainerState[container.ID]; ok {
 					continue
 				}
-				if containerConfig, ok := d.EvalContainer(container); ok {
+
+				if containerConfig := d.EvalContainer(ctx, container); containerConfig != nil {
 					monitChan <- containerConfig
 				}
 			}
@@ -456,6 +548,7 @@ func (d *DockerSource) WatchContainer(monitChan chan *ContainerConfig, deleteCha
 					deleteChan <- containerConfig
 				}
 			}
+
 			d.logger.Tracef("Reading logs from %d containers", len(d.runningContainerState))
 
 			ticker.Reset(d.CheckIntervalDuration)
@@ -463,16 +556,18 @@ func (d *DockerSource) WatchContainer(monitChan chan *ContainerConfig, deleteCha
 	}
 }
 
-func (d *DockerSource) StreamingAcquisition(out chan types.Event, t *tomb.Tomb) error {
+func (d *DockerSource) StreamingAcquisition(ctx context.Context, out chan types.Event, t *tomb.Tomb) error {
 	d.t = t
 	monitChan := make(chan *ContainerConfig)
 	deleteChan := make(chan *ContainerConfig)
+
 	d.logger.Infof("Starting docker acquisition")
+
 	t.Go(func() error {
-		return d.DockerManager(monitChan, deleteChan, out)
+		return d.DockerManager(ctx, monitChan, deleteChan, out)
 	})
 
-	return d.WatchContainer(monitChan, deleteChan)
+	return d.WatchContainer(ctx, monitChan, deleteChan)
 }
 
 func (d *DockerSource) Dump() interface{} {
@@ -486,9 +581,10 @@ func ReadTailScanner(scanner *bufio.Scanner, out chan string, t *tomb.Tomb) erro
 	return scanner.Err()
 }
 
-func (d *DockerSource) TailDocker(container *ContainerConfig, outChan chan types.Event, deleteChan chan *ContainerConfig) error {
+func (d *DockerSource) TailDocker(ctx context.Context, container *ContainerConfig, outChan chan types.Event, deleteChan chan *ContainerConfig) error {
 	container.logger.Infof("start tail for container %s", container.Name)
-	dockerReader, err := d.Client.ContainerLogs(context.Background(), container.ID, *d.containerLogsOptions)
+
+	dockerReader, err := d.Client.ContainerLogs(ctx, container.ID, *d.containerLogsOptions)
 	if err != nil {
 		container.logger.Errorf("unable to read logs from container: %+v", err)
 		return err
@@ -502,11 +598,13 @@ func (d *DockerSource) TailDocker(container *ContainerConfig, outChan chan types
 		reader := dlog.NewReader(dockerReader)
 		scanner = bufio.NewScanner(reader)
 	}
+
 	readerChan := make(chan string)
 	readerTomb := &tomb.Tomb{}
 	readerTomb.Go(func() error {
 		return ReadTailScanner(scanner, readerChan, readerTomb)
 	})
+
 	for {
 		select {
 		case <-container.t.Dying():
@@ -519,44 +617,43 @@ func (d *DockerSource) TailDocker(container *ContainerConfig, outChan chan types
 			}
 			l := types.Line{}
 			l.Raw = line
-			l.Labels = d.Config.Labels
+			l.Labels = container.Labels
 			l.Time = time.Now().UTC()
 			l.Src = container.Name
 			l.Process = true
 			l.Module = d.GetName()
-			var evt types.Event
-			if !d.Config.UseTimeMachine {
-				evt = types.Event{Line: l, Process: true, Type: types.LOG, ExpectMode: types.LIVE}
-			} else {
-				evt = types.Event{Line: l, Process: true, Type: types.LOG, ExpectMode: types.TIMEMACHINE}
-			}
+			evt := types.MakeEvent(d.Config.UseTimeMachine, types.LOG, true)
+			evt.Line = l
 			linesRead.With(prometheus.Labels{"source": container.Name}).Inc()
 			outChan <- evt
 			d.logger.Debugf("Sent line to parsing: %+v", evt.Line.Raw)
 		case <-readerTomb.Dying():
-			//This case is to handle temporarily losing the connection to the docker socket
-			//The only known case currently is when using docker-socket-proxy (and maybe a docker daemon restart)
+			// This case is to handle temporarily losing the connection to the docker socket
+			// The only known case currently is when using docker-socket-proxy (and maybe a docker daemon restart)
 			d.logger.Debugf("readerTomb dying for container %s, removing it from runningContainerState", container.Name)
 			deleteChan <- container
-			//Also reset the Since to avoid re-reading logs
+			// Also reset the Since to avoid re-reading logs
 			d.Config.Since = time.Now().UTC().Format(time.RFC3339)
 			d.containerLogsOptions.Since = d.Config.Since
+
 			return nil
 		}
 	}
 }
 
-func (d *DockerSource) DockerManager(in chan *ContainerConfig, deleteChan chan *ContainerConfig, outChan chan types.Event) error {
+func (d *DockerSource) DockerManager(ctx context.Context, in chan *ContainerConfig, deleteChan chan *ContainerConfig, outChan chan types.Event) error {
 	d.logger.Info("DockerSource Manager started")
+
 	for {
 		select {
 		case newContainer := <-in:
 			if _, ok := d.runningContainerState[newContainer.ID]; !ok {
 				newContainer.t = &tomb.Tomb{}
-				newContainer.logger = d.logger.WithFields(log.Fields{"container_name": newContainer.Name})
+				newContainer.logger = d.logger.WithField("container_name", newContainer.Name)
 				newContainer.t.Go(func() error {
-					return d.TailDocker(newContainer, outChan, deleteChan)
+					return d.TailDocker(ctx, newContainer, outChan, deleteChan)
 				})
+
 				d.runningContainerState[newContainer.ID] = newContainer
 			}
 		case containerToDelete := <-deleteChan:
@@ -570,13 +667,16 @@ func (d *DockerSource) DockerManager(in chan *ContainerConfig, deleteChan chan *
 				if d.runningContainerState[idx].t.Alive() {
 					d.logger.Infof("killing tail for container %s", container.Name)
 					d.runningContainerState[idx].t.Kill(nil)
+
 					if err := d.runningContainerState[idx].t.Wait(); err != nil {
 						d.logger.Infof("error while waiting for death of %s : %s", container.Name, err)
 					}
 				}
 			}
+
 			d.runningContainerState = nil
 			d.logger.Debugf("routine cleanup done, return")
+
 			return nil
 		}
 	}

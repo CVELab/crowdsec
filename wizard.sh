@@ -18,7 +18,6 @@ NC='\033[0m'
 SILENT="false"
 DOCKER_MODE="false"
 
-CROWDSEC_RUN_DIR="/var/run"
 CROWDSEC_LIB_DIR="/var/lib/crowdsec"
 CROWDSEC_USR_DIR="/usr/local/lib/crowdsec"
 CROWDSEC_DATA_DIR="${CROWDSEC_LIB_DIR}/data"
@@ -82,12 +81,14 @@ SLACK_PLUGIN_BINARY="./cmd/notification-slack/notification-slack"
 SPLUNK_PLUGIN_BINARY="./cmd/notification-splunk/notification-splunk"
 EMAIL_PLUGIN_BINARY="./cmd/notification-email/notification-email"
 SENTINEL_PLUGIN_BINARY="./cmd/notification-sentinel/notification-sentinel"
+FILE_PLUGIN_BINARY="./cmd/notification-file/notification-file"
 
 HTTP_PLUGIN_CONFIG="./cmd/notification-http/http.yaml"
 SLACK_PLUGIN_CONFIG="./cmd/notification-slack/slack.yaml"
 SPLUNK_PLUGIN_CONFIG="./cmd/notification-splunk/splunk.yaml"
 EMAIL_PLUGIN_CONFIG="./cmd/notification-email/email.yaml"
 SENTINEL_PLUGIN_CONFIG="./cmd/notification-sentinel/sentinel.yaml"
+FILE_PLUGIN_CONFIG="./cmd/notification-file/file.yaml"
 
 
 BACKUP_DIR=$(mktemp -d)
@@ -261,20 +262,26 @@ install_collection() {
         fi
     done
 
+    local YES=""
+
     if [[ ${SILENT} == "false" ]]; then
         COLLECTION_TO_INSTALL=($(whiptail --separate-output --ok-button Continue --title "Crowdsec collections" --checklist "Available collections in crowdsec, try to pick one that fits your profile. Collections contains parsers and scenarios to protect your system." 20 120 10 "${HMENU[@]}" 3>&1 1>&2 2>&3))
         if [ $? -eq 1 ]; then
             log_err "user bailed out at collection selection"
             exit 1;
         fi;
+    else
+        YES="--yes"
     fi;
 
     for collection in "${COLLECTION_TO_INSTALL[@]}"; do
         log_info "Installing collection '${collection}'"
-        ${CSCLI_BIN_INSTALLED} collections install "${collection}" --error
+        # shellcheck disable=SC2248
+        ${CSCLI_BIN_INSTALLED} collections install "${collection}" --error ${YES}
     done
 
-    ${CSCLI_BIN_INSTALLED} parsers install "crowdsecurity/whitelists" --error
+    # shellcheck disable=SC2248
+    ${CSCLI_BIN_INSTALLED} parsers install "crowdsecurity/whitelists" --error ${YES}
     if [[ ${SILENT} == "false" ]]; then
         whiptail --msgbox "Out of safety, I installed a parser called 'crowdsecurity/whitelists'. This one will prevent private IP addresses from being banned, feel free to remove it any time." 20 50
     fi
@@ -409,12 +416,14 @@ check_cs_version () {
 install_crowdsec() {
     mkdir -p "${CROWDSEC_DATA_DIR}"
     (cd config && find patterns -type f -exec install -Dm 644 "{}" "${CROWDSEC_CONFIG_PATH}/{}" \; && cd ../) || exit
+    mkdir -p "${CROWDSEC_CONFIG_PATH}/acquis.d" || exit
     mkdir -p "${CROWDSEC_CONFIG_PATH}/scenarios" || exit
     mkdir -p "${CROWDSEC_CONFIG_PATH}/postoverflows" || exit
     mkdir -p "${CROWDSEC_CONFIG_PATH}/collections" || exit
     mkdir -p "${CROWDSEC_CONFIG_PATH}/patterns" || exit
     mkdir -p "${CROWDSEC_CONFIG_PATH}/appsec-configs" || exit
     mkdir -p "${CROWDSEC_CONFIG_PATH}/appsec-rules" || exit
+    mkdir -p "${CROWDSEC_CONFIG_PATH}/contexts" || exit
     mkdir -p "${CROWDSEC_CONSOLE_DIR}" || exit
 
     # tmp
@@ -523,6 +532,7 @@ install_plugins(){
     cp ${HTTP_PLUGIN_BINARY} ${CROWDSEC_PLUGIN_DIR}
     cp ${EMAIL_PLUGIN_BINARY} ${CROWDSEC_PLUGIN_DIR}
     cp ${SENTINEL_PLUGIN_BINARY} ${CROWDSEC_PLUGIN_DIR}
+    cp ${FILE_PLUGIN_BINARY} ${CROWDSEC_PLUGIN_DIR}
 
     if [[ ${DOCKER_MODE} == "false" ]]; then
         cp -n ${SLACK_PLUGIN_CONFIG} /etc/crowdsec/notifications/
@@ -530,6 +540,7 @@ install_plugins(){
         cp -n ${HTTP_PLUGIN_CONFIG} /etc/crowdsec/notifications/
         cp -n ${EMAIL_PLUGIN_CONFIG} /etc/crowdsec/notifications/
         cp -n ${SENTINEL_PLUGIN_CONFIG} /etc/crowdsec/notifications/
+        cp -n ${FILE_PLUGIN_CONFIG} /etc/crowdsec/notifications/
     fi
 }
 

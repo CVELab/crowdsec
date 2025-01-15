@@ -26,14 +26,14 @@ teardown() {
     config_set '.common.log_media="stdout"'
     rune -0 wait-for \
         --err "Starting processing data" \
-        "${CROWDSEC}"
+        "$CROWDSEC"
 }
 
 @test "no agent: crowdsec LAPI should run (-no-cs flag)" {
     config_set '.common.log_media="stdout"'
     rune -0 wait-for \
         --err "CrowdSec Local API listening" \
-        "${CROWDSEC}" -no-cs
+        "$CROWDSEC" -no-cs
 }
 
 @test "no agent: crowdsec LAPI should run (no crowdsec_service in configuration file)" {
@@ -41,7 +41,7 @@ teardown() {
     config_log_stderr
     rune -0 wait-for \
         --err "crowdsec agent is disabled" \
-        "${CROWDSEC}"
+        "$CROWDSEC"
 }
 
 @test "no agent: cscli config show" {
@@ -62,10 +62,10 @@ teardown() {
 
 @test "no agent: cscli config backup" {
     config_disable_agent
-    backupdir=$(TMPDIR="${BATS_TEST_TMPDIR}" mktemp -u)
-    rune -0 cscli config backup "${backupdir}"
+    backupdir=$(TMPDIR="$BATS_TEST_TMPDIR" mktemp -u)
+    rune -0 cscli config backup "$backupdir"
     assert_stderr --partial "Starting configuration backup"
-    rune -1 cscli config backup "${backupdir}"
+    rune -1 cscli config backup "$backupdir"
 
     assert_stderr --partial "failed to backup config"
     assert_stderr --partial "file exists"
@@ -76,7 +76,7 @@ teardown() {
     config_disable_agent
     ./instance-crowdsec start
     rune -0 cscli lapi status
-    assert_stderr --partial "You can successfully interact with Local API (LAPI)"
+    assert_output --partial "You can successfully interact with Local API (LAPI)"
 }
 
 @test "cscli metrics" {
