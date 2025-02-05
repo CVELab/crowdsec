@@ -42,7 +42,6 @@ jobs:
           DEBUG: ""
           LAMBDA_EXECUTOR: ""
           KINESIS_ERROR_PROBABILITY: ""
-          DOCKER_HOST: unix:///var/run/docker.sock
           KINESIS_INITIALIZE_STREAMS: ${{ env.KINESIS_INITIALIZE_STREAMS }}
           LOCALSTACK_HOST: ${{ env.AWS_HOST }}  # Required so that resource urls are provided properly
           # e.g sqs url will get localhost if we don't set this env to map our service
@@ -115,6 +114,17 @@ jobs:
           --health-retries 5
           --health-start-period 30s
 
+      victorialogs:
+        image: victoriametrics/victoria-logs:v1.5.0-victorialogs
+        ports:
+          - "9428:9428"
+        options: >-
+          --name=victorialogs1
+          --health-cmd "wget -q -O - http://0.0.0.0:9428"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+          --health-start-period 30s
     steps:
 
     - name: Check out CrowdSec repository
@@ -126,12 +136,39 @@ jobs:
     - name: "Set up Go"
       uses: actions/setup-go@v5
       with:
-        go-version: "1.21.6"
+        go-version-file: go.mod
+
+    - name: Run "go generate" and check for changes
+      run: |
+        set -e
+        # ensure the version of 'protoc' matches the one that generated the files
+        PROTOBUF_VERSION="21.12"
+        # don't pollute the repo
+        pushd $HOME
+        curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION}/protoc-${PROTOBUF_VERSION}-linux-x86_64.zip
+        unzip protoc-${PROTOBUF_VERSION}-linux-x86_64.zip -d $HOME/.protoc
+        popd
+        export PATH="$HOME/.protoc/bin:$PATH"
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+        go generate ./...
+        protoc --version
+        if [[ $(git status --porcelain) ]]; then
+          echo "Error: Uncommitted changes found after running 'go generate'. Please commit all generated code."
+          git diff
+          exit 1
+        else
+          echo "No changes detected after running 'go generate'."
+        fi
 
     - name: Create localstack streams
       run: |
           aws --endpoint-url=http://127.0.0.1:4566 --region us-east-1 kinesis create-stream --stream-name stream-1-shard --shard-count 1
           aws --endpoint-url=http://127.0.0.1:4566 --region us-east-1 kinesis create-stream --stream-name stream-2-shards --shard-count 2
+
+    - name: Generate codecov configuration
+      run: |
+          .github/generate-codecov-yml.sh >> .github/codecov.yml
 
     - name: Build and run tests, static
       run: |
@@ -142,6 +179,11 @@ jobs:
         make build BUILD_STATIC=1
         make go-acc | sed 's/ *coverage:.*of statements in.*//' | richgo testfilter
 
+    # check if some component stubs are missing
+    - name: "Build profile: minimal"
+      run: |
+        make build BUILD_PROFILE=minimal
+
     - name: Run tests again, dynamic
       run: |
         make clean build
@@ -149,18 +191,15 @@ jobs:
         make go-acc | sed 's/ *coverage:.*of statements in.*//' | richgo testfilter
 
     - name: Upload unit coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         files: coverage.out
         flags: unit-linux
+        token: ${{ secrets.CODECOV_TOKEN }}
 
     - name: golangci-lint
-      uses: golangci/golangci-lint-action@v3
+      uses: golangci/golangci-lint-action@v6
       with:
-        version: v1.55
+        version: v1.63
         args: --issues-exit-code=1 --timeout 10m
         only-new-issues: false
-        # the cache is already managed above, enabling it here
-        # gives errors when extracting
-        skip-pkg-cache: true
-        skip-build-cache: true

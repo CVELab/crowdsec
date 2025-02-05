@@ -69,7 +69,7 @@ func (f RoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func smokeHandler(req *http.Request) *http.Response {
-	apiKey := req.Header.Get("x-api-key")
+	apiKey := req.Header.Get("X-Api-Key")
 	if apiKey != validApiKey {
 		return &http.Response{
 			StatusCode: http.StatusForbidden,
@@ -109,7 +109,7 @@ func smokeHandler(req *http.Request) *http.Response {
 	}
 }
 
-func TestNillClient(t *testing.T) {
+func TestNilClient(t *testing.T) {
 	defer ShutdownCrowdsecCTI()
 
 	if err := InitCrowdsecCTI(ptr.Of(""), nil, nil, nil); !errors.Is(err, cticlient.ErrDisabled) {
@@ -118,7 +118,7 @@ func TestNillClient(t *testing.T) {
 
 	item, err := CrowdsecCTI("1.2.3.4")
 	assert.Equal(t, err, cticlient.ErrDisabled)
-	assert.Equal(t, item, &cticlient.SmokeItem{})
+	assert.Equal(t, &cticlient.SmokeItem{}, item)
 }
 
 func TestInvalidAuth(t *testing.T) {
@@ -133,7 +133,7 @@ func TestInvalidAuth(t *testing.T) {
 	}))
 
 	item, err := CrowdsecCTI("1.2.3.4")
-	assert.Equal(t, item, &cticlient.SmokeItem{})
+	assert.Equal(t, &cticlient.SmokeItem{}, item)
 	assert.False(t, CTIApiEnabled)
 	assert.Equal(t, err, cticlient.ErrUnauthorized)
 
@@ -143,7 +143,7 @@ func TestInvalidAuth(t *testing.T) {
 	}))
 
 	item, err = CrowdsecCTI("1.2.3.4")
-	assert.Equal(t, item, &cticlient.SmokeItem{})
+	assert.Equal(t, &cticlient.SmokeItem{}, item)
 	assert.False(t, CTIApiEnabled)
 	assert.Equal(t, err, cticlient.ErrDisabled)
 }
@@ -159,7 +159,7 @@ func TestNoKey(t *testing.T) {
 	}))
 
 	item, err := CrowdsecCTI("1.2.3.4")
-	assert.Equal(t, item, &cticlient.SmokeItem{})
+	assert.Equal(t, &cticlient.SmokeItem{}, item)
 	assert.False(t, CTIApiEnabled)
 	assert.Equal(t, err, cticlient.ErrDisabled)
 }

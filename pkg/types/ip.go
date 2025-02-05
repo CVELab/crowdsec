@@ -15,13 +15,15 @@ func LastAddress(n net.IPNet) net.IP {
 	if ip == nil {
 		// IPv6
 		ip = n.IP
+
 		return net.IP{
 			ip[0] | ^n.Mask[0], ip[1] | ^n.Mask[1], ip[2] | ^n.Mask[2],
 			ip[3] | ^n.Mask[3], ip[4] | ^n.Mask[4], ip[5] | ^n.Mask[5],
 			ip[6] | ^n.Mask[6], ip[7] | ^n.Mask[7], ip[8] | ^n.Mask[8],
 			ip[9] | ^n.Mask[9], ip[10] | ^n.Mask[10], ip[11] | ^n.Mask[11],
 			ip[12] | ^n.Mask[12], ip[13] | ^n.Mask[13], ip[14] | ^n.Mask[14],
-			ip[15] | ^n.Mask[15]}
+			ip[15] | ^n.Mask[15],
+		}
 	}
 
 	return net.IPv4(
@@ -36,19 +38,20 @@ func Addr2Ints(anyIP string) (int, int64, int64, int64, int64, error) {
 	if strings.Contains(anyIP, "/") {
 		_, net, err := net.ParseCIDR(anyIP)
 		if err != nil {
-			return -1, 0, 0, 0, 0, fmt.Errorf("while parsing range %s: %w", anyIP, err)
+			return -1, 0, 0, 0, 0, fmt.Errorf("invalid ip range '%s': %w", anyIP, err)
 		}
+
 		return Range2Ints(*net)
 	}
 
 	ip := net.ParseIP(anyIP)
 	if ip == nil {
-		return -1, 0, 0, 0, 0, fmt.Errorf("invalid address")
+		return -1, 0, 0, 0, 0, fmt.Errorf("invalid ip address '%s'", anyIP)
 	}
 
 	sz, start, end, err := IP2Ints(ip)
 	if err != nil {
-		return -1, 0, 0, 0, 0, fmt.Errorf("while parsing ip %s: %w", anyIP, err)
+		return -1, 0, 0, 0, 0, fmt.Errorf("invalid ip address '%s': %w", anyIP, err)
 	}
 
 	return sz, start, end, start, end, nil
@@ -56,19 +59,22 @@ func Addr2Ints(anyIP string) (int, int64, int64, int64, int64, error) {
 
 /*size (16|4), nw_start, suffix_start, nw_end, suffix_end, error*/
 func Range2Ints(network net.IPNet) (int, int64, int64, int64, int64, error) {
-
 	szStart, nwStart, sfxStart, err := IP2Ints(network.IP)
 	if err != nil {
 		return -1, 0, 0, 0, 0, fmt.Errorf("converting first ip in range: %w", err)
 	}
+
 	lastAddr := LastAddress(network)
+
 	szEnd, nwEnd, sfxEnd, err := IP2Ints(lastAddr)
 	if err != nil {
 		return -1, 0, 0, 0, 0, fmt.Errorf("transforming last address of range: %w", err)
 	}
+
 	if szEnd != szStart {
 		return -1, 0, 0, 0, 0, fmt.Errorf("inconsistent size for range first(%d) and last(%d) ip", szStart, szEnd)
 	}
+
 	return szStart, nwStart, sfxStart, nwEnd, sfxEnd, nil
 }
 
@@ -85,6 +91,7 @@ func uint2int(u uint64) int64 {
 		ret = int64(u)
 		ret -= math.MaxInt64
 	}
+
 	return ret
 }
 
@@ -97,13 +104,15 @@ func IP2Ints(pip net.IP) (int, int64, int64, error) {
 
 	if pip4 != nil {
 		ip_nw32 := binary.BigEndian.Uint32(pip4)
-
 		return 4, uint2int(uint64(ip_nw32)), uint2int(ip_sfx), nil
-	} else if pip16 != nil {
+	}
+
+	if pip16 != nil {
 		ip_nw = binary.BigEndian.Uint64(pip16[0:8])
 		ip_sfx = binary.BigEndian.Uint64(pip16[8:16])
+
 		return 16, uint2int(ip_nw), uint2int(ip_sfx), nil
-	} else {
-		return -1, 0, 0, fmt.Errorf("unexpected len %d for %s", len(pip), pip)
 	}
+
+	return -1, 0, 0, fmt.Errorf("unexpected len %d for %s", len(pip), pip)
 }

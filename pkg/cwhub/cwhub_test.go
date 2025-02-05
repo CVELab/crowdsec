@@ -1,6 +1,8 @@
 package cwhub
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -14,7 +16,7 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/csconfig"
 )
 
-const mockURLTemplate = "https://hub-cdn.crowdsec.net/%s/%s"
+const mockURLTemplate = "https://cdn-hub.crowdsec.net/crowdsecurity/%s/%s"
 
 /*
  To test :
@@ -27,10 +29,9 @@ const mockURLTemplate = "https://hub-cdn.crowdsec.net/%s/%s"
 
 var responseByPath map[string]string
 
-// testHub initializes a temporary hub with an empty json file, optionally updating it.
-func testHub(t *testing.T, update bool) *Hub {
-	tmpDir, err := os.MkdirTemp("", "testhub")
-	require.NoError(t, err)
+// testHubOld initializes a temporary hub with an empty json file, optionally updating it.
+func testHubOld(t *testing.T, update bool) *Hub {
+	tmpDir := t.TempDir()
 
 	local := &csconfig.LocalHubCfg{
 		HubDir:         filepath.Join(tmpDir, "crowdsec", "hub"),
@@ -39,7 +40,7 @@ func testHub(t *testing.T, update bool) *Hub {
 		InstallDataDir: filepath.Join(tmpDir, "installed-data"),
 	}
 
-	err = os.MkdirAll(local.HubDir, 0o700)
+	err := os.MkdirAll(local.HubDir, 0o700)
 	require.NoError(t, err)
 
 	err = os.MkdirAll(local.InstallDir, 0o700)
@@ -51,17 +52,21 @@ func testHub(t *testing.T, update bool) *Hub {
 	err = os.WriteFile(local.HubIndexFile, []byte("{}"), 0o644)
 	require.NoError(t, err)
 
-	t.Cleanup(func() {
-		os.RemoveAll(tmpDir)
-	})
+	hub, err := NewHub(local, log.StandardLogger())
+	require.NoError(t, err)
 
-	remote := &RemoteHubCfg{
-		Branch:      "master",
-		URLTemplate: mockURLTemplate,
-		IndexPath:   ".index.json",
+	if update {
+		indexProvider := &Downloader{
+			Branch:      "master",
+			URLTemplate: mockURLTemplate,
+		}
+
+		ctx := context.Background()
+		err = hub.Update(ctx, indexProvider, false)
+		require.NoError(t, err)
 	}
 
-	hub, err := NewHub(local, remote, update, log.StandardLogger())
+	err = hub.Load()
 	require.NoError(t, err)
 
 	return hub
@@ -72,16 +77,16 @@ func envSetup(t *testing.T) *Hub {
 	setResponseByPath()
 	log.SetLevel(log.DebugLevel)
 
-	defaultTransport := hubClient.Transport
+	defaultTransport := HubClient.Transport
 
 	t.Cleanup(func() {
-		hubClient.Transport = defaultTransport
+		HubClient.Transport = defaultTransport
 	})
 
 	// Mock the http client
-	hubClient.Transport = newMockTransport()
+	HubClient.Transport = newMockTransport()
 
-	hub := testHub(t, true)
+	hub := testHubOld(t, true)
 
 	return hub
 }
@@ -107,7 +112,7 @@ func (t *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// FAKE PARSER
 	resp, ok := responseByPath[req.URL.Path]
 	if !ok {
-		log.Fatalf("unexpected url :/ %s", req.URL.Path)
+		return nil, fmt.Errorf("unexpected url: %s", req.URL.Path)
 	}
 
 	response.Body = io.NopCloser(strings.NewReader(resp))
@@ -132,18 +137,18 @@ func fileToStringX(path string) string {
 
 func setResponseByPath() {
 	responseByPath = map[string]string{
-		"/master/parsers/s01-parse/crowdsecurity/foobar_parser.yaml":    fileToStringX("./testdata/foobar_parser.yaml"),
-		"/master/parsers/s01-parse/crowdsecurity/foobar_subparser.yaml": fileToStringX("./testdata/foobar_parser.yaml"),
-		"/master/collections/crowdsecurity/test_collection.yaml":        fileToStringX("./testdata/collection_v1.yaml"),
-		"/master/.index.json": fileToStringX("./testdata/index1.json"),
-		"/master/scenarios/crowdsecurity/foobar_scenario.yaml": `filter: true
+		"/crowdsecurity/master/parsers/s01-parse/crowdsecurity/foobar_parser.yaml":    fileToStringX("./testdata/foobar_parser.yaml"),
+		"/crowdsecurity/master/parsers/s01-parse/crowdsecurity/foobar_subparser.yaml": fileToStringX("./testdata/foobar_parser.yaml"),
+		"/crowdsecurity/master/collections/crowdsecurity/test_collection.yaml":        fileToStringX("./testdata/collection_v1.yaml"),
+		"/crowdsecurity/master/.index.json":                                           fileToStringX("./testdata/index1.json"),
+		"/crowdsecurity/master/scenarios/crowdsecurity/foobar_scenario.yaml": `filter: true
 name: crowdsecurity/foobar_scenario`,
-		"/master/scenarios/crowdsecurity/barfoo_scenario.yaml": `filter: true
+		"/crowdsecurity/master/scenarios/crowdsecurity/barfoo_scenario.yaml": `filter: true
 name: crowdsecurity/foobar_scenario`,
-		"/master/collections/crowdsecurity/foobar_subcollection.yaml": `
+		"/crowdsecurity/master/collections/crowdsecurity/foobar_subcollection.yaml": `
 blah: blalala
 qwe: jejwejejw`,
-		"/master/collections/crowdsecurity/foobar.yaml": `
+		"/crowdsecurity/master/collections/crowdsecurity/foobar.yaml": `
 blah: blalala
 qwe: jejwejejw`,
 	}

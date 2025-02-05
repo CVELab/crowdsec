@@ -1,18 +1,22 @@
 // Package csconfig contains the configuration structures for crowdsec and cscli.
-
 package csconfig
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/crowdsecurity/go-cs-lib/csstring"
 	"github.com/crowdsecurity/go-cs-lib/ptr"
 	"github.com/crowdsecurity/go-cs-lib/yamlpatch"
+
+	"github.com/crowdsecurity/crowdsec/pkg/acquisition/configuration"
 )
 
 // defaultConfigDir is the base path to all configuration files, to be overridden in the Makefile */
@@ -25,8 +29,8 @@ var globalConfig = Config{}
 
 // Config contains top-level defaults -> overridden by configuration file -> overridden by CLI flags
 type Config struct {
-	//just a path to ourselves :p
-	FilePath     *string             `yaml:"-"`
+	// just a path to ourselves :p
+	FilePath     string              `yaml:"-"`
 	Self         []byte              `yaml:"-"`
 	Common       *CommonCfg          `yaml:"common,omitempty"`
 	Prometheus   *PrometheusCfg      `yaml:"prometheus,omitempty"`
@@ -41,24 +45,32 @@ type Config struct {
 	Hub          *LocalHubCfg        `yaml:"-"`
 }
 
-func NewConfig(configFile string, disableAgent bool, disableAPI bool, inCli bool) (*Config, string, error) {
+// NewConfig
+func NewConfig(configFile string, disableAgent bool, disableAPI bool, quiet bool) (*Config, string, error) {
 	patcher := yamlpatch.NewPatcher(configFile, ".local")
-	patcher.SetQuiet(inCli)
+	patcher.SetQuiet(quiet)
+
 	fcontent, err := patcher.MergedPatchContent()
 	if err != nil {
 		return nil, "", err
 	}
+
 	configData := csstring.StrictExpand(string(fcontent), os.LookupEnv)
 	cfg := Config{
-		FilePath:     &configFile,
+		FilePath:     configFile,
 		DisableAgent: disableAgent,
 		DisableAPI:   disableAPI,
 	}
 
-	err = yaml.UnmarshalStrict([]byte(configData), &cfg)
+	dec := yaml.NewDecoder(strings.NewReader(configData))
+	dec.KnownFields(true)
+
+	err = dec.Decode(&cfg)
 	if err != nil {
-		// this is actually the "merged" yaml
-		return nil, "", fmt.Errorf("%s: %w", configFile, err)
+		if !errors.Is(err, io.EOF) {
+			// this is actually the "merged" yaml
+			return nil, "", fmt.Errorf("%s: %w", configFile, err)
+		}
 	}
 
 	if cfg.Prometheus == nil {
@@ -109,7 +121,7 @@ func NewDefaultConfig() *Config {
 	}
 	prometheus := PrometheusCfg{
 		Enabled: true,
-		Level:   "full",
+		Level:   configuration.CFG_METRICS_FULL,
 	}
 	configPaths := ConfigurationPaths{
 		ConfigDir:          DefaultConfigPath("."),
@@ -147,7 +159,7 @@ func NewDefaultConfig() *Config {
 	dbConfig := DatabaseCfg{
 		Type:         "sqlite",
 		DbPath:       DefaultDataPath("crowdsec.db"),
-		MaxOpenConns: ptr.Of(DEFAULT_MAX_OPEN_CONNS),
+		MaxOpenConns: DEFAULT_MAX_OPEN_CONNS,
 	}
 
 	globalCfg := Config{

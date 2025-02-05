@@ -8,12 +8,11 @@ License:        MIT
 URL:            https://crowdsec.net
 Source0:        https://github.com/crowdsecurity/%{name}/archive/v%(echo $VERSION).tar.gz
 Source1:        80-%{name}.preset
-Patch0:         crowdsec.unit.patch
-Patch1:         user.patch
+Patch0:         user.patch
 BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 BuildRequires:  systemd
-Requires: crontabs
+Requires: (crontabs or cron)
 %{?fc33:BuildRequires: systemd-rpm-macros}
 %{?fc34:BuildRequires: systemd-rpm-macros}
 %{?fc35:BuildRequires: systemd-rpm-macros}
@@ -32,13 +31,13 @@ Requires: crontabs
 %setup -q -T -b 0
 
 %patch0
-%patch1
 
 %build
 sed -i "s#/usr/local/lib/crowdsec/plugins/#%{_libdir}/%{name}/plugins/#g" config/config.yaml
 
 %install
 rm -rf %{buildroot}
+mkdir -p %{buildroot}/etc/crowdsec/acquis.d
 mkdir -p %{buildroot}/etc/crowdsec/hub
 mkdir -p %{buildroot}/etc/crowdsec/patterns
 mkdir -p %{buildroot}/etc/crowdsec/console/
@@ -53,7 +52,7 @@ mkdir -p %{buildroot}%{_libdir}/%{name}/plugins/
 install -m 755 -D cmd/crowdsec/crowdsec %{buildroot}%{_bindir}/%{name}
 install -m 755 -D cmd/crowdsec-cli/cscli %{buildroot}%{_bindir}/cscli
 install -m 755 -D wizard.sh %{buildroot}/usr/share/crowdsec/wizard.sh
-install -m 644 -D config/crowdsec.service %{buildroot}%{_unitdir}/%{name}.service
+install -m 644 -D debian/crowdsec.service %{buildroot}%{_unitdir}/%{name}.service
 install -m 644 -D config/patterns/* -t %{buildroot}%{_sysconfdir}/crowdsec/patterns
 install -m 600 -D config/config.yaml %{buildroot}%{_sysconfdir}/crowdsec
 install -m 644 -D config/simulation.yaml %{buildroot}%{_sysconfdir}/crowdsec
@@ -68,13 +67,14 @@ install -m 551 cmd/notification-http/notification-http %{buildroot}%{_libdir}/%{
 install -m 551 cmd/notification-splunk/notification-splunk %{buildroot}%{_libdir}/%{name}/plugins/
 install -m 551 cmd/notification-email/notification-email %{buildroot}%{_libdir}/%{name}/plugins/
 install -m 551 cmd/notification-sentinel/notification-sentinel %{buildroot}%{_libdir}/%{name}/plugins/
+install -m 551 cmd/notification-file/notification-file %{buildroot}%{_libdir}/%{name}/plugins/
 
 install -m 600 cmd/notification-slack/slack.yaml %{buildroot}%{_sysconfdir}/crowdsec/notifications/
 install -m 600 cmd/notification-http/http.yaml %{buildroot}%{_sysconfdir}/crowdsec/notifications/
 install -m 600 cmd/notification-splunk/splunk.yaml %{buildroot}%{_sysconfdir}/crowdsec/notifications/
 install -m 600 cmd/notification-email/email.yaml %{buildroot}%{_sysconfdir}/crowdsec/notifications/
 install -m 600 cmd/notification-sentinel/sentinel.yaml %{buildroot}%{_sysconfdir}/crowdsec/notifications/
-
+install -m 600 cmd/notification-file/file.yaml %{buildroot}%{_sysconfdir}/crowdsec/notifications/
 
 %clean
 rm -rf %{buildroot}
@@ -89,6 +89,7 @@ rm -rf %{buildroot}
 %{_libdir}/%{name}/plugins/notification-splunk
 %{_libdir}/%{name}/plugins/notification-email
 %{_libdir}/%{name}/plugins/notification-sentinel
+%{_libdir}/%{name}/plugins/notification-file
 %{_sysconfdir}/%{name}/patterns/linux-syslog
 %{_sysconfdir}/%{name}/patterns/ruby
 %{_sysconfdir}/%{name}/patterns/nginx
@@ -124,6 +125,7 @@ rm -rf %{buildroot}
 %config(noreplace) %{_sysconfdir}/%{name}/notifications/splunk.yaml
 %config(noreplace) %{_sysconfdir}/%{name}/notifications/email.yaml
 %config(noreplace) %{_sysconfdir}/%{name}/notifications/sentinel.yaml
+%config(noreplace) %{_sysconfdir}/%{name}/notifications/file.yaml
 %config(noreplace) %{_sysconfdir}/cron.daily/%{name}
 
 %{_unitdir}/%{name}.service
@@ -141,18 +143,15 @@ rm -rf %{buildroot}
 
 #systemctl stop crowdsec || true
 
-if [ $1 == 2 ];then  
-    if [[ ! -d /var/lib/crowdsec/backup ]]; then
-        cscli config backup /var/lib/crowdsec/backup
-    fi
-fi
+#if [ $1 == 2 ]; then
+#    upgrade pre-install here
+#fi
 
 
 %post -p /bin/bash
 
 #install
 if [ $1 == 1 ]; then
-
     if [ ! -f "/var/lib/crowdsec/data/crowdsec.db" ] ; then
         touch /var/lib/crowdsec/data/crowdsec.db
     fi
@@ -177,27 +176,21 @@ if [ $1 == 1 ]; then
     fi
 
     cscli hub update
+    cscli hub upgrade
     CSCLI_BIN_INSTALLED="/usr/bin/cscli" SILENT=true install_collection
 
-    echo "Get started with CrowdSec:"
-    echo " * Detailed guides are available in our documentation: https://docs.crowdsec.net"
-    echo " * Configuration items created by the community can be found at the Hub: https://hub.crowdsec.net"
-    echo " * Gain insights into your use of CrowdSec with the help of the console https://app.crowdsec.net"
+    GREEN='\033[0;32m'
+    BOLD='\033[1m'
+    RESET='\033[0m'
 
-#upgrade
-elif [ $1 == 2 ] && [ -d /var/lib/crowdsec/backup ]; then
-    cscli config restore /var/lib/crowdsec/backup
-    if [ $? == 0 ]; then
-       rm -rf /var/lib/crowdsec/backup
-    fi
-
-    if [[ -f %{_sysconfdir}/crowdsec/online_api_credentials.yaml ]] ; then
-        chmod 600 %{_sysconfdir}/crowdsec/online_api_credentials.yaml
-    fi
-    
-    if [[ -f %{_sysconfdir}/crowdsec/local_api_credentials.yaml ]] ; then
-        chmod 600 %{_sysconfdir}/crowdsec/local_api_credentials.yaml
-    fi
+    echo -e "${BOLD}Get started with CrowdSec:${RESET}"
+    echo -e " * Go further by following our ${BOLD}post installation steps${RESET} : ${GREEN}${BOLD}https://docs.crowdsec.net/u/getting_started/next_steps${RESET}"
+    echo -e "===================================================================================================================="
+    echo -e " * Install a ${BOLD}remediation component${RESET} to block attackers: ${GREEN}${BOLD}https://docs.crowdsec.net/u/bouncers/intro${RESET}"
+    echo -e "===================================================================================================================="
+    echo -e " * Find more ${BOLD}collections${RESET}, ${BOLD}parsers${RESET} and ${BOLD}scenarios${RESET} created by the community with the Hub: ${GREEN}${BOLD}https://hub.crowdsec.net${RESET}"
+    echo -e "===================================================================================================================="
+    echo -e " * Subscribe to ${BOLD}additional blocklists${RESET}, ${BOLD}visualize${RESET} your alerts and more with the console: ${GREEN}${BOLD}https://app.crowdsec.net${RESET}"
 fi
 
 %systemd_post %{name}.service

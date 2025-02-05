@@ -23,9 +23,9 @@ teardown() {
 #----------
 
 @test "cscli metrics (crowdsec not running)" {
-    rune -1 cscli metrics
-    # crowdsec is down
-    assert_stderr --partial 'failed to fetch prometheus metrics: executing GET request for URL \"http://127.0.0.1:6060/metrics\" failed: Get \"http://127.0.0.1:6060/metrics\": dial tcp 127.0.0.1:6060: connect: connection refused'
+    rune -0 cscli metrics
+    # crowdsec is down, we won't get an error because some metrics come from the db instead
+    assert_stderr --partial 'while fetching metrics: executing GET request for URL \"http://127.0.0.1:6060/metrics\" failed: Get \"http://127.0.0.1:6060/metrics\": dial tcp 127.0.0.1:6060: connect: connection refused'
 }
 
 @test "cscli metrics (bad configuration)" {
@@ -58,4 +58,46 @@ teardown() {
     config_set 'del(.prometheus)'
     rune -1 cscli metrics
     assert_stderr --partial "prometheus is not enabled, can't show metrics"
+}
+
+@test "cscli metrics" {
+    rune -0 ./instance-crowdsec start
+    rune -0 cscli lapi status
+    rune -0 cscli metrics
+    assert_output --partial "Route"
+    assert_output --partial '/v1/watchers/login'
+    assert_output --partial "Local API Metrics"
+
+    rune -0 cscli metrics -o json
+    rune -0 jq 'keys' <(output)
+    assert_output --partial '"alerts",'
+    assert_output --partial '"parsers",'
+}
+
+@test "cscli metrics list" {
+    rune -0 cscli metrics list
+    assert_output --regexp "Type.*Title.*Description"
+
+    rune -0 cscli metrics list -o json
+    rune -0 jq -c '.[] | [.type,.title]' <(output)
+    assert_line '["acquisition","Acquisition Metrics"]'
+}
+
+@test "cscli metrics show" {
+    rune -0 ./instance-crowdsec start
+    rune -0 cscli lapi status
+
+    assert_equal "$(cscli metrics)" "$(cscli metrics show)"
+
+    rune -1 cscli metrics show foobar
+    assert_stderr --partial "unknown metrics type: foobar"
+
+    rune -0 cscli metrics show lapi
+    assert_output --partial "Local API Metrics"
+    assert_output --regexp "Route.*Method.*Hits"
+    assert_output --regexp "/v1/watchers/login.*POST"
+
+    rune -0 cscli metrics show lapi -o json
+    rune -0 jq -c '.lapi."/v1/watchers/login" | keys' <(output)
+    assert_json '["POST"]'
 }

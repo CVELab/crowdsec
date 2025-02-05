@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"runtime/pprof"
 
@@ -23,8 +24,8 @@ func StartRunSvc() error {
 
 	defer trace.CatchPanic("crowdsec/StartRunSvc")
 
-	//Always try to stop CPU profiling to avoid passing flags around
-	//It's a noop if profiling is not enabled
+	// Always try to stop CPU profiling to avoid passing flags around
+	// It's a noop if profiling is not enabled
 	defer pprof.StopCPUProfile()
 
 	if cConfig, err = LoadConfig(flags.ConfigFile, flags.DisableAgent, flags.DisableAPI, false); err != nil {
@@ -33,7 +34,6 @@ func StartRunSvc() error {
 
 	log.Infof("Crowdsec %s", version.String())
 
-	apiReady := make(chan bool, 1)
 	agentReady := make(chan bool, 1)
 
 	// Enable profiling early
@@ -42,18 +42,24 @@ func StartRunSvc() error {
 
 		var err error
 
-		if cConfig.DbConfig != nil {
-			dbClient, err = database.NewClient(cConfig.DbConfig)
+		ctx := context.TODO()
 
+		if cConfig.DbConfig != nil {
+			dbClient, err = database.NewClient(ctx, cConfig.DbConfig)
 			if err != nil {
-				return fmt.Errorf("unable to create database client: %s", err)
+				return fmt.Errorf("unable to create database client: %w", err)
 			}
 		}
 
 		registerPrometheus(cConfig.Prometheus)
 
-		go servePrometheus(cConfig.Prometheus, dbClient, apiReady, agentReady)
+		go servePrometheus(cConfig.Prometheus, dbClient, agentReady)
+	} else {
+		// avoid leaking the channel
+		go func() {
+			<-agentReady
+		}()
 	}
 
-	return Serve(cConfig, apiReady, agentReady)
+	return Serve(cConfig, agentReady)
 }
