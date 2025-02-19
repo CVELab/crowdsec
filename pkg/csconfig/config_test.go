@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/crowdsecurity/go-cs-lib/cstest"
 )
@@ -32,7 +32,6 @@ func TestNewCrowdSecConfig(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			result := &Config{}
 			assert.Equal(t, tc.expected, result)
@@ -43,5 +42,5 @@ func TestNewCrowdSecConfig(t *testing.T) {
 func TestDefaultConfig(t *testing.T) {
 	x := NewDefaultConfig()
 	_, err := yaml.Marshal(x)
-	require.NoError(t, err, "failed marshaling config: %s", err)
+	require.NoError(t, err, "failed to serialize config: %s", err)
 }

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/crowdsecurity/go-cs-lib/ptr"
 )
@@ -133,27 +133,24 @@ func (c *Config) LoadCrowdsec() error {
 	}
 
 	if err = c.LoadAPIClient(); err != nil {
-		return fmt.Errorf("loading api client: %s", err)
+		return fmt.Errorf("loading api client: %w", err)
 	}
 
 	return nil
 }
 
 func (c *CrowdsecServiceCfg) DumpContextConfigFile() error {
-	var out []byte
-	var err error
-
 	// XXX: MakeDirs
-
-	if out, err = yaml.Marshal(c.ContextToSend); err != nil {
-		return fmt.Errorf("while marshaling ConsoleConfig (for %s): %w", c.ConsoleContextPath, err)
+	out, err := yaml.Marshal(c.ContextToSend)
+	if err != nil {
+		return fmt.Errorf("while serializing ConsoleConfig (for %s): %w", c.ConsoleContextPath, err)
 	}
 
-	if err = os.MkdirAll(filepath.Dir(c.ConsoleContextPath), 0700); err != nil {
+	if err = os.MkdirAll(filepath.Dir(c.ConsoleContextPath), 0o700); err != nil {
 		return fmt.Errorf("while creating directories for %s: %w", c.ConsoleContextPath, err)
 	}
 
-	if err := os.WriteFile(c.ConsoleContextPath, out, 0600); err != nil {
+	if err := os.WriteFile(c.ConsoleContextPath, out, 0o600); err != nil {
 		return fmt.Errorf("while dumping console config to %s: %w", c.ConsoleContextPath, err)
 	}
 

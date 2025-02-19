@@ -4,17 +4,30 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/crowdsecurity/crowdsec/pkg/apiclient/useragent"
 )
 
-var hubClient = &http.Client{
-	Timeout: 120 * time.Second,
+// hubTransport wraps a Transport to set a custom User-Agent.
+type hubTransport struct {
+	http.RoundTripper
 }
 
-// safePath returns a joined path and ensures that it does not escape the base directory.
-func safePath(dir, filePath string) (string, error) {
+func (t *hubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("User-Agent", useragent.Default())
+	return t.RoundTripper.RoundTrip(req)
+}
+
+// HubClient is the HTTP client used to communicate with the CrowdSec Hub.
+var HubClient = &http.Client{
+	Timeout:   120 * time.Second,
+	Transport: &hubTransport{http.DefaultTransport},
+}
+
+// SafePath returns a joined path and ensures that it does not escape the base directory.
+func SafePath(dir, filePath string) (string, error) {
 	absBaseDir, err := filepath.Abs(filepath.Clean(dir))
 	if err != nil {
 		return "", err
@@ -30,11 +43,4 @@ func safePath(dir, filePath string) (string, error) {
 	}
 
 	return absFilePath, nil
-}
-
-// SortItemSlice sorts a slice of items by name, case insensitive.
-func SortItemSlice(items []*Item) {
-	sort.Slice(items, func(i, j int) bool {
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
-	})
 }

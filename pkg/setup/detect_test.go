@@ -16,7 +16,7 @@ import (
 )
 
 //nolint:dupword
-var fakeSystemctlOutput = `UNIT FILE                                 STATE    VENDOR PRESET
+const fakeSystemctlOutput = `UNIT FILE                                 STATE    VENDOR PRESET
 crowdsec-setup-detect.service            enabled  enabled
 apache2.service                           enabled  enabled
 apparmor.service                          enabled  enabled
@@ -54,14 +54,19 @@ func TestSetupHelperProcess(t *testing.T) {
 	}
 
 	fmt.Fprint(os.Stdout, fakeSystemctlOutput)
-	os.Exit(0)
+	os.Exit(0) //nolint:revive
 }
 
 func tempYAML(t *testing.T, content string) os.File {
 	t.Helper()
 	require := require.New(t)
-	file, err := os.CreateTemp("", "")
+	file, err := os.CreateTemp(t.TempDir(), "")
 	require.NoError(err)
+
+	t.Cleanup(func() {
+		require.NoError(file.Close())
+		require.NoError(os.Remove(file.Name()))
+	})
 
 	_, err = file.WriteString(dedent.Dedent(content))
 	require.NoError(err)
@@ -94,11 +99,11 @@ func TestPathExists(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		env := setup.NewExprEnvironment(setup.DetectOptions{}, setup.ExprOS{})
 
 		t.Run(tc.path, func(t *testing.T) {
 			t.Parallel()
+
 			actual := env.PathExists(tc.path)
 			require.Equal(t, tc.expected, actual)
 		})
@@ -147,11 +152,11 @@ func TestVersionCheck(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		e := setup.ExprOS{RawVersion: tc.version}
 
 		t.Run(fmt.Sprintf("Check(%s,%s)", tc.version, tc.constraint), func(t *testing.T) {
 			t.Parallel()
+
 			actual, err := e.VersionCheck(tc.constraint)
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
 			require.Equal(t, tc.expected, actual)
@@ -184,7 +189,6 @@ func TestNormalizeVersion(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.version, func(t *testing.T) {
 			t.Parallel()
 			actual := setup.NormalizeVersion(tc.version)
@@ -246,11 +250,11 @@ func TestListSupported(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
 			f := tempYAML(t, tc.yml)
-			defer os.Remove(f.Name())
+
 			supported, err := setup.ListSupported(&f)
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
 			require.ElementsMatch(t, tc.expected, supported)
@@ -329,9 +333,9 @@ func TestApplyRules(t *testing.T) {
 	env := setup.ExprEnvironment{}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
 			svc := setup.Service{When: tc.rules}
 			_, actualOk, err := setup.ApplyRules(svc, env) //nolint:typecheck,nolintlint  // exported only for tests
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
@@ -375,7 +379,6 @@ func TestDetectSimpleRule(t *testing.T) {
 	      - false
 	  ugly:
 	`)
-	defer os.Remove(f.Name())
 
 	detected, err := setup.Detect(&f, setup.DetectOptions{})
 	require.NoError(err)
@@ -419,10 +422,8 @@ detect:
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			f := tempYAML(t, tc.config)
-			defer os.Remove(f.Name())
 
 			detected, err := setup.Detect(&f, setup.DetectOptions{})
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
@@ -513,10 +514,8 @@ detect:
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			f := tempYAML(t, tc.config)
-			defer os.Remove(f.Name())
 
 			detected, err := setup.Detect(&f, setup.DetectOptions{})
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
@@ -544,7 +543,6 @@ func TestDetectForcedUnit(t *testing.T) {
 	      journalctl_filter:
 	        - _SYSTEMD_UNIT=crowdsec-setup-forced.service
 	`)
-	defer os.Remove(f.Name())
 
 	detected, err := setup.Detect(&f, setup.DetectOptions{ForcedUnits: []string{"crowdsec-setup-forced.service"}})
 	require.NoError(err)
@@ -582,7 +580,6 @@ func TestDetectForcedProcess(t *testing.T) {
 	    when:
 	      - ProcessRunning("foobar")
 	`)
-	defer os.Remove(f.Name())
 
 	detected, err := setup.Detect(&f, setup.DetectOptions{ForcedProcesses: []string{"foobar"}})
 	require.NoError(err)
@@ -612,7 +609,6 @@ func TestDetectSkipService(t *testing.T) {
 	    when:
 	      - ProcessRunning("foobar")
 	`)
-	defer os.Remove(f.Name())
 
 	detected, err := setup.Detect(&f, setup.DetectOptions{ForcedProcesses: []string{"foobar"}, SkipServices: []string{"wizard"}})
 	require.NoError(err)
@@ -825,10 +821,8 @@ func TestDetectForcedOS(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			f := tempYAML(t, tc.config)
-			defer os.Remove(f.Name())
 
 			detected, err := setup.Detect(&f, setup.DetectOptions{ForcedOS: tc.forced})
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
@@ -840,7 +834,6 @@ func TestDetectForcedOS(t *testing.T) {
 func TestDetectDatasourceValidation(t *testing.T) {
 	// It could be a good idea to test UnmarshalConfig() separately in addition
 	// to Configure(), in each datasource. For now, we test these here.
-
 	require := require.New(t)
 	setup.ExecCommand = fakeExecCommand
 
@@ -874,7 +867,7 @@ func TestDetectDatasourceValidation(t *testing.T) {
 				    datasource:
 				      source: wombat`,
 			expected:    setup.Setup{Setup: []setup.ServiceSetup{}},
-			expectedErr: "invalid datasource for foobar: unknown source 'wombat'",
+			expectedErr: "invalid datasource for foobar: unknown data source wombat",
 		}, {
 			name: "source is misplaced",
 			config: `
@@ -1011,10 +1004,8 @@ func TestDetectDatasourceValidation(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			f := tempYAML(t, tc.config)
-			defer os.Remove(f.Name())
 			detected, err := setup.Detect(&f, setup.DetectOptions{})
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
 			require.Equal(tc.expected, detected)

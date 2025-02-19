@@ -13,7 +13,6 @@ import (
 
 	"github.com/crowdsecurity/go-cs-lib/cstest"
 	"github.com/crowdsecurity/go-cs-lib/ptr"
-	"github.com/crowdsecurity/go-cs-lib/version"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 )
@@ -24,7 +23,8 @@ func TestAlertsListAsMachine(t *testing.T) {
 	mux, urlx, teardown := setup()
 	mux.HandleFunc("/watchers/login", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		_, err := w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		assert.NoError(t, err)
 	})
 
 	log.Printf("URL is %s", urlx)
@@ -35,7 +35,6 @@ func TestAlertsListAsMachine(t *testing.T) {
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", version.String()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})
@@ -180,16 +179,16 @@ func TestAlertsListAsMachine(t *testing.T) {
 		},
 	}
 
-	//log.Debugf("data : -> %s", spew.Sdump(alerts))
-	//log.Debugf("resp : -> %s", spew.Sdump(resp))
-	//log.Debugf("expected : -> %s", spew.Sdump(expected))
-	//first one returns data
+	// log.Debugf("data : -> %s", spew.Sdump(alerts))
+	// log.Debugf("resp : -> %s", spew.Sdump(resp))
+	// log.Debugf("expected : -> %s", spew.Sdump(expected))
+	// first one returns data
 	alerts, resp, err := client.Alerts.List(context.Background(), AlertsListOpts{})
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 	assert.Equal(t, expected, *alerts)
 
-	//this one doesn't
+	// this one doesn't
 	filter := AlertsListOpts{IPEquals: ptr.Of("1.2.3.4")}
 
 	alerts, resp, err = client.Alerts.List(context.Background(), filter)
@@ -204,7 +203,8 @@ func TestAlertsGetAsMachine(t *testing.T) {
 	mux, urlx, teardown := setup()
 	mux.HandleFunc("/watchers/login", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		_, err := w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		assert.NoError(t, err)
 	})
 	log.Printf("URL is %s", urlx)
 
@@ -214,7 +214,6 @@ func TestAlertsGetAsMachine(t *testing.T) {
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", version.String()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})
@@ -360,7 +359,7 @@ func TestAlertsGetAsMachine(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 	assert.Equal(t, *expected, *alerts)
 
-	//fail
+	// fail
 	_, _, err = client.Alerts.GetByID(context.Background(), 2)
 	cstest.RequireErrorMessage(t, err, "API error: object not found")
 }
@@ -371,13 +370,15 @@ func TestAlertsCreateAsMachine(t *testing.T) {
 	mux, urlx, teardown := setup()
 	mux.HandleFunc("/watchers/login", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		_, err := w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		assert.NoError(t, err)
 	})
 
 	mux.HandleFunc("/alerts", func(w http.ResponseWriter, r *http.Request) {
 		testMethod(t, r, "POST")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`["3"]`))
+		_, err := w.Write([]byte(`["3"]`))
+		assert.NoError(t, err)
 	})
 
 	log.Printf("URL is %s", urlx)
@@ -388,7 +389,6 @@ func TestAlertsCreateAsMachine(t *testing.T) {
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", version.String()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})
@@ -412,14 +412,16 @@ func TestAlertsDeleteAsMachine(t *testing.T) {
 	mux, urlx, teardown := setup()
 	mux.HandleFunc("/watchers/login", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		_, err := w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		assert.NoError(t, err)
 	})
 
 	mux.HandleFunc("/alerts", func(w http.ResponseWriter, r *http.Request) {
 		testMethod(t, r, "DELETE")
 		assert.Equal(t, "ip=1.2.3.4", r.URL.RawQuery)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"message":"0 deleted alerts"}`))
+		_, err := w.Write([]byte(`{"message":"0 deleted alerts"}`))
+		assert.NoError(t, err)
 	})
 
 	log.Printf("URL is %s", urlx)
@@ -430,7 +432,6 @@ func TestAlertsDeleteAsMachine(t *testing.T) {
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", version.String()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})

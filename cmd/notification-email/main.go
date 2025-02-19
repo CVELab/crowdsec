@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
-	"github.com/crowdsecurity/crowdsec/pkg/protobufs"
 	"github.com/hashicorp/go-hclog"
 	plugin "github.com/hashicorp/go-plugin"
 	mail "github.com/xhit/go-simple-mail/v2"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
+
+	"github.com/crowdsecurity/crowdsec/pkg/csplugin"
+	"github.com/crowdsecurity/crowdsec/pkg/protobufs"
 )
 
 var baseLogger hclog.Logger = hclog.New(&hclog.LoggerOptions{
@@ -53,6 +56,7 @@ type PluginConfig struct {
 }
 
 type EmailPlugin struct {
+	protobufs.UnimplementedNotifierServer
 	ConfigByName map[string]PluginConfig
 }
 
@@ -64,7 +68,7 @@ func (n *EmailPlugin) Configure(ctx context.Context, config *protobufs.Config) (
 		EncryptionType: "ssltls",
 		AuthType:       "login",
 		SenderEmail:    "crowdsec@crowdsec.local",
-		HeloHost:	"localhost",
+		HeloHost:       "localhost",
 	}
 
 	if err := yaml.Unmarshal(config.Config, &d); err != nil {
@@ -72,19 +76,20 @@ func (n *EmailPlugin) Configure(ctx context.Context, config *protobufs.Config) (
 	}
 
 	if d.Name == "" {
-		return nil, fmt.Errorf("name is required")
+		return nil, errors.New("name is required")
 	}
 
 	if d.SMTPHost == "" {
-		return nil, fmt.Errorf("SMTP host is not set")
+		return nil, errors.New("SMTP host is not set")
 	}
 
-	if d.ReceiverEmails == nil || len(d.ReceiverEmails) == 0 {
-		return nil, fmt.Errorf("receiver emails are not set")
+	if len(d.ReceiverEmails) == 0 {
+		return nil, errors.New("receiver emails are not set")
 	}
 
 	n.ConfigByName[d.Name] = d
 	baseLogger.Debug(fmt.Sprintf("Email plugin '%s' use SMTP host '%s:%d'", d.Name, d.SMTPHost, d.SMTPPort))
+
 	return &protobufs.Empty{}, nil
 }
 
@@ -92,6 +97,7 @@ func (n *EmailPlugin) Notify(ctx context.Context, notification *protobufs.Notifi
 	if _, ok := n.ConfigByName[notification.Name]; !ok {
 		return nil, fmt.Errorf("invalid plugin config name %s", notification.Name)
 	}
+
 	cfg := n.ConfigByName[notification.Name]
 
 	logger := baseLogger.Named(cfg.Name)
@@ -117,6 +123,7 @@ func (n *EmailPlugin) Notify(ctx context.Context, notification *protobufs.Notifi
 		server.ConnectTimeout, err = time.ParseDuration(cfg.ConnectTimeout)
 		if err != nil {
 			logger.Warn(fmt.Sprintf("invalid connect timeout '%s', using default '10s'", cfg.ConnectTimeout))
+
 			server.ConnectTimeout = 10 * time.Second
 		}
 	}
@@ -125,15 +132,18 @@ func (n *EmailPlugin) Notify(ctx context.Context, notification *protobufs.Notifi
 		server.SendTimeout, err = time.ParseDuration(cfg.SendTimeout)
 		if err != nil {
 			logger.Warn(fmt.Sprintf("invalid send timeout '%s', using default '10s'", cfg.SendTimeout))
+
 			server.SendTimeout = 10 * time.Second
 		}
 	}
 
 	logger.Debug("making smtp connection")
+
 	smtpClient, err := server.Connect()
 	if err != nil {
 		return &protobufs.Empty{}, err
 	}
+
 	logger.Debug("smtp connection done")
 
 	email := mail.NewMSG()
@@ -146,12 +156,14 @@ func (n *EmailPlugin) Notify(ctx context.Context, notification *protobufs.Notifi
 	if err != nil {
 		return &protobufs.Empty{}, err
 	}
+
 	logger.Info(fmt.Sprintf("sent email to %v", cfg.ReceiverEmails))
+
 	return &protobufs.Empty{}, nil
 }
 
 func main() {
-	var handshake = plugin.HandshakeConfig{
+	handshake := plugin.HandshakeConfig{
 		ProtocolVersion:  1,
 		MagicCookieKey:   "CROWDSEC_PLUGIN_KEY",
 		MagicCookieValue: os.Getenv("CROWDSEC_PLUGIN_KEY"),
@@ -160,7 +172,7 @@ func main() {
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: handshake,
 		Plugins: map[string]plugin.Plugin{
-			"email": &protobufs.NotifierPlugin{
+			"email": &csplugin.NotifierPlugin{
 				Impl: &EmailPlugin{ConfigByName: make(map[string]PluginConfig)},
 			},
 		},

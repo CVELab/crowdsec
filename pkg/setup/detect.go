@@ -2,6 +2,7 @@ package setup
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,8 +10,8 @@ import (
 	"sort"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/antonmedv/expr"
 	"github.com/blackfireio/osinfo"
+	"github.com/expr-lang/expr"
 	"github.com/shirou/gopsutil/v3/process"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -53,6 +54,7 @@ func validateDataSource(opaqueDS DataSourceItem) error {
 	// formally validate YAML
 
 	commonDS := configuration.DataSourceCommonCfg{}
+
 	body, err := yaml.Marshal(opaqueDS)
 	if err != nil {
 		return err
@@ -66,14 +68,14 @@ func validateDataSource(opaqueDS DataSourceItem) error {
 	// source is mandatory // XXX unless it's not?
 
 	if commonDS.Source == "" {
-		return fmt.Errorf("source is empty")
+		return errors.New("source is empty")
 	}
 
 	// source must be known
 
-	ds := acquisition.GetDataSourceIface(commonDS.Source)
-	if ds == nil {
-		return fmt.Errorf("unknown source '%s'", commonDS.Source)
+	ds, err := acquisition.GetDataSourceIface(commonDS.Source)
+	if err != nil {
+		return err
 	}
 
 	// unmarshal and validate the rest with the specific implementation
@@ -104,7 +106,7 @@ func readDetectConfig(fin io.Reader) (DetectConfig, error) {
 
 	switch dc.Version {
 	case "":
-		return DetectConfig{}, fmt.Errorf("missing version tag (must be 1.0)")
+		return DetectConfig{}, errors.New("missing version tag (must be 1.0)")
 	case "1.0":
 		// all is well
 	default:
@@ -543,7 +545,7 @@ func Detect(detectReader io.Reader, opts DetectOptions) (Setup, error) {
 		//			}
 		//			err = yaml.Unmarshal(svc.AcquisYAML, svc.DataSource)
 		//			if err != nil {
-		//				return Setup{}, fmt.Errorf("while unmarshaling datasource for service %s: %w", name, err)
+		//				return Setup{}, fmt.Errorf("while parsing datasource for service %s: %w", name, err)
 		//			}
 		//		}
 

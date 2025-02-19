@@ -12,10 +12,7 @@ import (
 
 // LoadFeatureFlagsEnv parses the environment variables to enable feature flags.
 func LoadFeatureFlagsEnv(logger *log.Logger) error {
-	if err := fflag.Crowdsec.SetFromEnv(logger); err != nil {
-		return err
-	}
-	return nil
+	return fflag.Crowdsec.SetFromEnv(logger)
 }
 
 // FeatureFlagsFileLocation returns the path to the feature.yaml file.
@@ -41,7 +38,7 @@ func LoadFeatureFlagsFile(configPath string, logger *log.Logger) error {
 func ListFeatureFlags() string {
 	enabledFeatures := fflag.Crowdsec.GetEnabledFeatures()
 
-	msg := "<none>"
+	msg := "none"
 	if len(enabledFeatures) > 0 {
 		msg = strings.Join(enabledFeatures, ", ")
 	}

@@ -62,7 +62,6 @@ func TestWhitelistCompile(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			node.Whitelist = tt.whitelist
 			_, err := node.CompileWLs()
@@ -284,14 +283,13 @@ func TestWhitelistCheck(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			var err error
 			node.Whitelist = tt.whitelist
-			node.CompileWLs()
-			isWhitelisted := node.CheckIPsWL(tt.event.ParseIPSources())
+			_, err := node.CompileWLs()
+			require.NoError(t, err)
+			isWhitelisted := node.CheckIPsWL(tt.event)
 			if !isWhitelisted {
-				isWhitelisted, err = node.CheckExprWL(map[string]interface{}{"evt": tt.event})
+				isWhitelisted, err = node.CheckExprWL(map[string]interface{}{"evt": tt.event}, tt.event)
 			}
 			require.NoError(t, err)
 			require.Equal(t, tt.expected, isWhitelisted)

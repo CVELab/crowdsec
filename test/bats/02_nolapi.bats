@@ -27,12 +27,12 @@ teardown() {
     config_set '.common.log_media="stdout"'
     rune -0 wait-for \
         --err "CrowdSec Local API listening" \
-        "${CROWDSEC}"
+        "$CROWDSEC"
 }
 
 @test "crowdsec should not run without LAPI (-no-api flag)" {
     config_set '.common.log_media="stdout"'
-    rune -1 wait-for "${CROWDSEC}" -no-api
+    rune -1 wait-for "$CROWDSEC" -no-api
 }
 
 @test "crowdsec should not run without LAPI (no api.server in configuration file)" {
@@ -40,7 +40,7 @@ teardown() {
     config_log_stderr
     rune -0 wait-for \
         --err "crowdsec local API is disabled" \
-        "${CROWDSEC}"
+        "$CROWDSEC"
 }
 
 @test "capi status shouldn't be ok without api.server" {
@@ -64,18 +64,6 @@ teardown() {
     assert_output --partial "Crowdsec:"
     assert_output --partial "cscli:"
     refute_output --partial "Local API Server"
-}
-
-@test "cscli config backup" {
-    config_disable_lapi
-    backupdir=$(TMPDIR="${BATS_TEST_TMPDIR}" mktemp -u)
-    rune -0 cscli config backup "${backupdir}"
-    assert_stderr --partial "Starting configuration backup"
-    rune -1 cscli config backup "${backupdir}"
-    rm -rf -- "${backupdir:?}"
-
-    assert_stderr --partial "failed to backup config"
-    assert_stderr --partial "file exists"
 }
 
 @test "lapi status shouldn't be ok without api.server" {

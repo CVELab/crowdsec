@@ -19,6 +19,9 @@ import (
 // swagger:model GetDecisionsStreamResponseLinks
 type GetDecisionsStreamResponseLinks struct {
 
+	// allowlists
+	Allowlists []*AllowlistLink `json:"allowlists"`
+
 	// blocklists
 	Blocklists []*BlocklistLink `json:"blocklists"`
 }
@@ -27,6 +30,10 @@ type GetDecisionsStreamResponseLinks struct {
 func (m *GetDecisionsStreamResponseLinks) Validate(formats strfmt.Registry) error {
 	var res []error
 
+	if err := m.validateAllowlists(formats); err != nil {
+		res = append(res, err)
+	}
+
 	if err := m.validateBlocklists(formats); err != nil {
 		res = append(res, err)
 	}
@@ -34,6 +41,32 @@ func (m *GetDecisionsStreamResponseLinks) Validate(formats strfmt.Registry) erro
 	if len(res) > 0 {
 		return errors.CompositeValidationError(res...)
 	}
+	return nil
+}
+
+func (m *GetDecisionsStreamResponseLinks) validateAllowlists(formats strfmt.Registry) error {
+	if swag.IsZero(m.Allowlists) { // not required
+		return nil
+	}
+
+	for i := 0; i < len(m.Allowlists); i++ {
+		if swag.IsZero(m.Allowlists[i]) { // not required
+			continue
+		}
+
+		if m.Allowlists[i] != nil {
+			if err := m.Allowlists[i].Validate(formats); err != nil {
+				if ve, ok := err.(*errors.Validation); ok {
+					return ve.ValidateName("allowlists" + "." + strconv.Itoa(i))
+				} else if ce, ok := err.(*errors.CompositeError); ok {
+					return ce.ValidateName("allowlists" + "." + strconv.Itoa(i))
+				}
+				return err
+			}
+		}
+
+	}
+
 	return nil
 }
 
@@ -67,6 +100,10 @@ func (m *GetDecisionsStreamResponseLinks) validateBlocklists(formats strfmt.Regi
 func (m *GetDecisionsStreamResponseLinks) ContextValidate(ctx context.Context, formats strfmt.Registry) error {
 	var res []error
 
+	if err := m.contextValidateAllowlists(ctx, formats); err != nil {
+		res = append(res, err)
+	}
+
 	if err := m.contextValidateBlocklists(ctx, formats); err != nil {
 		res = append(res, err)
 	}
@@ -77,11 +114,41 @@ func (m *GetDecisionsStreamResponseLinks) ContextValidate(ctx context.Context, f
 	return nil
 }
 
+func (m *GetDecisionsStreamResponseLinks) contextValidateAllowlists(ctx context.Context, formats strfmt.Registry) error {
+
+	for i := 0; i < len(m.Allowlists); i++ {
+
+		if m.Allowlists[i] != nil {
+
+			if swag.IsZero(m.Allowlists[i]) { // not required
+				return nil
+			}
+
+			if err := m.Allowlists[i].ContextValidate(ctx, formats); err != nil {
+				if ve, ok := err.(*errors.Validation); ok {
+					return ve.ValidateName("allowlists" + "." + strconv.Itoa(i))
+				} else if ce, ok := err.(*errors.CompositeError); ok {
+					return ce.ValidateName("allowlists" + "." + strconv.Itoa(i))
+				}
+				return err
+			}
+		}
+
+	}
+
+	return nil
+}
+
 func (m *GetDecisionsStreamResponseLinks) contextValidateBlocklists(ctx context.Context, formats strfmt.Registry) error {
 
 	for i := 0; i < len(m.Blocklists); i++ {
 
 		if m.Blocklists[i] != nil {
+
+			if swag.IsZero(m.Blocklists[i]) { // not required
+				return nil
+			}
+
 			if err := m.Blocklists[i].ContextValidate(ctx, formats); err != nil {
 				if ve, ok := err.(*errors.Validation); ok {
 					return ve.ValidateName("blocklists" + "." + strconv.Itoa(i))

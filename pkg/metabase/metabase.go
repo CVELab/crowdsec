@@ -30,15 +30,16 @@ type Metabase struct {
 }
 
 type Config struct {
-	Database      *csconfig.DatabaseCfg `yaml:"database"`
-	ListenAddr    string                `yaml:"listen_addr"`
-	ListenPort    string                `yaml:"listen_port"`
-	ListenURL     string                `yaml:"listen_url"`
-	Username      string                `yaml:"username"`
-	Password      string                `yaml:"password"`
-	DBPath        string                `yaml:"metabase_db_path"`
-	DockerGroupID string                `yaml:"-"`
-	Image         string                `yaml:"image"`
+	Database             *csconfig.DatabaseCfg `yaml:"database"`
+	ListenAddr           string                `yaml:"listen_addr"`
+	ListenPort           string                `yaml:"listen_port"`
+	ListenURL            string                `yaml:"listen_url"`
+	Username             string                `yaml:"username"`
+	Password             string                `yaml:"password"`
+	DBPath               string                `yaml:"metabase_db_path"`
+	DockerGroupID        string                `yaml:"-"`
+	Image                string                `yaml:"image"`
+	EnvironmentVariables []string              `yaml:"environment_variables"`
 }
 
 var (
@@ -70,12 +71,12 @@ func (m *Metabase) Init(containerName string, image string) error {
 
 	switch m.Config.Database.Type {
 	case "mysql":
-		return fmt.Errorf("'mysql' is not supported yet for cscli dashboard")
+		return errors.New("'mysql' is not supported yet for cscli dashboard")
 		//DBConnectionURI = fmt.Sprintf("MB_DB_CONNECTION_URI=mysql://%s:%d/%s?user=%s&password=%s&allowPublicKeyRetrieval=true", remoteDBAddr, m.Config.Database.Port, m.Config.Database.DbName, m.Config.Database.User, m.Config.Database.Password)
 	case "sqlite":
 		m.InternalDBURL = metabaseSQLiteDBURL
 	case "postgresql", "postgres", "pgsql":
-		return fmt.Errorf("'postgresql' is not supported yet by cscli dashboard")
+		return errors.New("'postgresql' is not supported yet by cscli dashboard")
 	default:
 		return fmt.Errorf("database '%s' not supported", m.Config.Database.Type)
 	}
@@ -88,7 +89,7 @@ func (m *Metabase) Init(containerName string, image string) error {
 	if err != nil {
 		return err
 	}
-	m.Container, err = NewContainer(m.Config.ListenAddr, m.Config.ListenPort, m.Config.DBPath, containerName, image, DBConnectionURI, m.Config.DockerGroupID)
+	m.Container, err = NewContainer(m.Config.ListenAddr, m.Config.ListenPort, m.Config.DBPath, containerName, image, DBConnectionURI, m.Config.DockerGroupID, m.Config.EnvironmentVariables)
 	if err != nil {
 		return fmt.Errorf("container init: %w", err)
 	}
@@ -137,21 +138,21 @@ func (m *Metabase) LoadConfig(configPath string) error {
 	m.Config = config
 
 	return nil
-
 }
 
-func SetupMetabase(dbConfig *csconfig.DatabaseCfg, listenAddr string, listenPort string, username string, password string, mbDBPath string, dockerGroupID string, containerName string, image string) (*Metabase, error) {
+func SetupMetabase(dbConfig *csconfig.DatabaseCfg, listenAddr string, listenPort string, username string, password string, mbDBPath string, dockerGroupID string, containerName string, image string, environmentVariables []string) (*Metabase, error) {
 	metabase := &Metabase{
 		Config: &Config{
-			Database:      dbConfig,
-			ListenAddr:    listenAddr,
-			ListenPort:    listenPort,
-			Username:      username,
-			Password:      password,
-			ListenURL:     fmt.Sprintf("http://%s:%s", listenAddr, listenPort),
-			DBPath:        mbDBPath,
-			DockerGroupID: dockerGroupID,
-			Image:         image,
+			Database:             dbConfig,
+			ListenAddr:           listenAddr,
+			ListenPort:           listenPort,
+			Username:             username,
+			Password:             password,
+			ListenURL:            fmt.Sprintf("http://%s:%s", listenAddr, listenPort),
+			DBPath:               mbDBPath,
+			DockerGroupID:        dockerGroupID,
+			Image:                image,
+			EnvironmentVariables: environmentVariables,
 		},
 	}
 	if err := metabase.Init(containerName, image); err != nil {

@@ -1,18 +1,21 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	_ "net/http/pprof"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/tomb.v2"
+
+	"github.com/crowdsecurity/go-cs-lib/trace"
 
 	"github.com/crowdsecurity/crowdsec/pkg/acquisition"
 	"github.com/crowdsecurity/crowdsec/pkg/csconfig"
@@ -26,28 +29,29 @@ import (
 )
 
 var (
-	/*tombs for the parser, buckets and outputs.*/
-	acquisTomb   tomb.Tomb
-	parsersTomb  tomb.Tomb
-	bucketsTomb  tomb.Tomb
-	outputsTomb  tomb.Tomb
-	apiTomb      tomb.Tomb
-	crowdsecTomb tomb.Tomb
-	pluginTomb   tomb.Tomb
+	// tombs for the parser, buckets and outputs.
+	acquisTomb    tomb.Tomb
+	parsersTomb   tomb.Tomb
+	bucketsTomb   tomb.Tomb
+	outputsTomb   tomb.Tomb
+	apiTomb       tomb.Tomb
+	crowdsecTomb  tomb.Tomb
+	pluginTomb    tomb.Tomb
+	lpMetricsTomb tomb.Tomb
 
 	flags *Flags
 
-	/*the state of acquisition*/
+	// the state of acquisition
 	dataSources []acquisition.DataSource
-	/*the state of the buckets*/
+	// the state of the buckets
 	holders []leakybucket.BucketFactory
 	buckets *leakybucket.Buckets
 
 	inputLineChan   chan types.Event
 	inputEventChan  chan types.Event
 	outputEventChan chan types.Event // the buckets init returns its own chan that is used for multiplexing
-	/*settings*/
-	lastProcessedItem time.Time /*keep track of last item timestamp in time-machine. it is used to GC buckets when we dump them.*/
+	// settings
+	lastProcessedItem time.Time // keep track of last item timestamp in time-machine. it is used to GC buckets when we dump them.
 	pluginBroker      csplugin.PluginBroker
 )
 
@@ -72,30 +76,27 @@ type Flags struct {
 	DisableCAPI    bool
 	Transform      string
 	OrderEvent     bool
-	CpuProfile     string
+	CPUProfile     string
+}
+
+func (f *Flags) haveTimeMachine() bool {
+	return f.OneShotDSN != ""
 }
 
 type labelsMap map[string]string
 
 func LoadBuckets(cConfig *csconfig.Config, hub *cwhub.Hub) error {
-	var (
-		err   error
-		files []string
-	)
-
-	for _, hubScenarioItem := range hub.GetItemMap(cwhub.SCENARIOS) {
-		if hubScenarioItem.State.Installed {
-			files = append(files, hubScenarioItem.State.LocalPath)
-		}
-	}
+	var err error
 
 	buckets = leakybucket.NewBuckets()
 
-	log.Infof("Loading %d scenario files", len(files))
-	holders, outputEventChan, err = leakybucket.LoadBuckets(cConfig.Crowdsec, hub, files, &bucketsTomb, buckets, flags.OrderEvent)
+	scenarios := hub.GetInstalledByType(cwhub.SCENARIOS, false)
 
+	log.Infof("Loading %d scenario files", len(scenarios))
+
+	holders, outputEventChan, err = leakybucket.LoadBuckets(cConfig.Crowdsec, hub, scenarios, &bucketsTomb, buckets, flags.OrderEvent)
 	if err != nil {
-		return fmt.Errorf("scenario loading failed: %v", err)
+		return fmt.Errorf("scenario loading failed: %w", err)
 	}
 
 	if cConfig.Prometheus != nil && cConfig.Prometheus.Enabled {
@@ -107,7 +108,7 @@ func LoadBuckets(cConfig *csconfig.Config, hub *cwhub.Hub) error {
 	return nil
 }
 
-func LoadAcquisition(cConfig *csconfig.Config) error {
+func LoadAcquisition(cConfig *csconfig.Config) ([]acquisition.DataSource, error) {
 	var err error
 
 	if flags.SingleFileType != "" && flags.OneShotDSN != "" {
@@ -116,20 +117,20 @@ func LoadAcquisition(cConfig *csconfig.Config) error {
 
 		dataSources, err = acquisition.LoadAcquisitionFromDSN(flags.OneShotDSN, flags.Labels, flags.Transform)
 		if err != nil {
-			return errors.Wrapf(err, "failed to configure datasource for %s", flags.OneShotDSN)
+			return nil, fmt.Errorf("failed to configure datasource for %s: %w", flags.OneShotDSN, err)
 		}
 	} else {
-		dataSources, err = acquisition.LoadAcquisitionFromFile(cConfig.Crowdsec)
+		dataSources, err = acquisition.LoadAcquisitionFromFile(cConfig.Crowdsec, cConfig.Prometheus)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if len(dataSources) == 0 {
-		return fmt.Errorf("no datasource enabled")
+		return nil, errors.New("no datasource enabled")
 	}
 
-	return nil
+	return dataSources, nil
 }
 
 var (
@@ -142,14 +143,14 @@ func (l *labelsMap) String() string {
 	return "labels"
 }
 
-func (l labelsMap) Set(label string) error {
+func (l *labelsMap) Set(label string) error {
 	for _, pair := range strings.Split(label, ",") {
 		split := strings.Split(pair, ":")
 		if len(split) != 2 {
 			return fmt.Errorf("invalid format for label '%s', must be key:value", pair)
 		}
 
-		l[split[0]] = split[1]
+		(*l)[split[0]] = split[1]
 	}
 
 	return nil
@@ -181,7 +182,7 @@ func (f *Flags) Parse() {
 	}
 
 	flag.StringVar(&dumpFolder, "dump-data", "", "dump parsers/buckets raw outputs")
-	flag.StringVar(&f.CpuProfile, "cpu-profile", "", "write cpu profile to file")
+	flag.StringVar(&f.CPUProfile, "cpu-profile", "", "write cpu profile to file")
 	flag.Parse()
 }
 
@@ -226,6 +227,10 @@ func LoadConfig(configFile string, disableAgent bool, disableAPI bool, quiet boo
 		return nil, fmt.Errorf("while loading configuration file: %w", err)
 	}
 
+	if err := trace.Init(filepath.Join(cConfig.ConfigPaths.DataDir, "trace")); err != nil {
+		return nil, fmt.Errorf("while setting up trace directory: %w", err)
+	}
+
 	cConfig.Common.LogLevel = newLogLevel(cConfig.Common.LogLevel, flags)
 
 	if dumpFolder != "" {
@@ -244,12 +249,14 @@ func LoadConfig(configFile string, disableAgent bool, disableAPI bool, quiet boo
 	if err := types.SetDefaultLoggerConfig(cConfig.Common.LogMedia,
 		cConfig.Common.LogDir, *cConfig.Common.LogLevel,
 		cConfig.Common.LogMaxSize, cConfig.Common.LogMaxFiles,
-		cConfig.Common.LogMaxAge, cConfig.Common.CompressLogs,
+		cConfig.Common.LogMaxAge, cConfig.Common.LogFormat, cConfig.Common.CompressLogs,
 		cConfig.Common.ForceColorLogs); err != nil {
 		return nil, err
 	}
 
-	primalHook.Enabled = (cConfig.Common.LogMedia != "stdout")
+	if cConfig.Common.LogMedia != "stdout" {
+		log.AddHook(newFatalHook())
+	}
 
 	if err := csconfig.LoadFeatureFlagsFile(configFile, log.StandardLogger()); err != nil {
 		return nil, err
@@ -272,7 +279,7 @@ func LoadConfig(configFile string, disableAgent bool, disableAPI bool, quiet boo
 	}
 
 	if cConfig.DisableAPI && cConfig.DisableAgent {
-		return nil, errors.New("You must run at least the API Server or crowdsec")
+		return nil, errors.New("you must run at least the API Server or crowdsec")
 	}
 
 	if flags.OneShotDSN != "" && flags.SingleFileType == "" {
@@ -291,7 +298,7 @@ func LoadConfig(configFile string, disableAgent bool, disableAPI bool, quiet boo
 		if cConfig.API != nil && cConfig.API.Server != nil {
 			cConfig.API.Server.OnlineClient = nil
 		}
-		/*if the api is disabled as well, just read file and exit, don't daemonize*/
+		// if the api is disabled as well, just read file and exit, don't daemonize
 		if cConfig.DisableAPI {
 			cConfig.Common.Daemonize = false
 		}
@@ -323,7 +330,9 @@ func LoadConfig(configFile string, disableAgent bool, disableAPI bool, quiet boo
 var crowdsecT0 time.Time
 
 func main() {
-	log.AddHook(primalHook)
+	// The initial log level is INFO, even if the user provided an -error or -warning flag
+	// because we need feature flags before parsing cli flags
+	log.SetFormatter(&log.TextFormatter{TimestampFormat: time.RFC3339, FullTimestamp: true})
 
 	if err := fflag.RegisterAllFeatures(); err != nil {
 		log.Fatalf("failed to register features: %s", err)
@@ -351,20 +360,23 @@ func main() {
 	}
 
 	if flags.PrintVersion {
-		cwversion.Show()
+		os.Stdout.WriteString(cwversion.FullString())
 		os.Exit(0)
 	}
 
-	if flags.CpuProfile != "" {
-		f, err := os.Create(flags.CpuProfile)
+	if flags.CPUProfile != "" {
+		f, err := os.Create(flags.CPUProfile)
 		if err != nil {
 			log.Fatalf("could not create CPU profile: %s", err)
 		}
-		log.Infof("CPU profile will be written to %s", flags.CpuProfile)
+
+		log.Infof("CPU profile will be written to %s", flags.CPUProfile)
+
 		if err := pprof.StartCPUProfile(f); err != nil {
 			f.Close()
 			log.Fatalf("could not start CPU profile: %s", err)
 		}
+
 		defer f.Close()
 		defer pprof.StopCPUProfile()
 	}

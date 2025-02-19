@@ -1,6 +1,8 @@
 package require
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -8,6 +10,7 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/csconfig"
 	"github.com/crowdsecurity/crowdsec/pkg/cwhub"
+	"github.com/crowdsecurity/crowdsec/pkg/database"
 )
 
 func LAPI(c *csconfig.Config) error {
@@ -16,7 +19,7 @@ func LAPI(c *csconfig.Config) error {
 	}
 
 	if c.DisableAPI {
-		return fmt.Errorf("local API is disabled -- this command must be run on the local API machine")
+		return errors.New("local API is disabled -- this command must be run on the local API machine")
 	}
 
 	return nil
@@ -24,15 +27,23 @@ func LAPI(c *csconfig.Config) error {
 
 func CAPI(c *csconfig.Config) error {
 	if c.API.Server.OnlineClient == nil {
-		return fmt.Errorf("no configuration for Central API (CAPI) in '%s'", *c.FilePath)
+		return fmt.Errorf("no configuration for Central API (CAPI) in '%s'", c.FilePath)
 	}
 
 	return nil
 }
 
 func PAPI(c *csconfig.Config) error {
+	if err := CAPI(c); err != nil {
+		return err
+	}
+
+	if err := CAPIRegistered(c); err != nil {
+		return err
+	}
+
 	if c.API.Server.OnlineClient.Credentials.PapiURL == "" {
-		return fmt.Errorf("no PAPI URL in configuration")
+		return errors.New("no PAPI URL in configuration")
 	}
 
 	return nil
@@ -40,10 +51,19 @@ func PAPI(c *csconfig.Config) error {
 
 func CAPIRegistered(c *csconfig.Config) error {
 	if c.API.Server.OnlineClient.Credentials == nil {
-		return fmt.Errorf("the Central API (CAPI) must be configured with 'cscli capi register'")
+		return errors.New("the Central API (CAPI) must be configured with 'cscli capi register'")
 	}
 
 	return nil
+}
+
+func DBClient(ctx context.Context, dbcfg *csconfig.DatabaseCfg) (*database.Client, error) {
+	db, err := database.NewClient(ctx, dbcfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	return db, nil
 }
 
 func DB(c *csconfig.Config) error {
@@ -56,21 +76,19 @@ func DB(c *csconfig.Config) error {
 
 func Notifications(c *csconfig.Config) error {
 	if c.ConfigPaths.NotificationDir == "" {
-		return fmt.Errorf("config_paths.notification_dir is not set in crowdsec config")
+		return errors.New("config_paths.notification_dir is not set in crowdsec config")
 	}
 
 	return nil
 }
 
-// RemoteHub returns the configuration required to download hub index and items: url, branch, etc.
-func RemoteHub(c *csconfig.Config) *cwhub.RemoteHubCfg {
+func HubDownloader(ctx context.Context, c *csconfig.Config) *cwhub.Downloader {
 	// set branch in config, and log if necessary
-	branch := HubBranch(c)
+	branch := HubBranch(ctx, c)
 	urlTemplate := HubURLTemplate(c)
-	remote := &cwhub.RemoteHubCfg{
+	remote := &cwhub.Downloader{
 		Branch:      branch,
 		URLTemplate: urlTemplate,
-		IndexPath: ".index.json",
 	}
 
 	return remote
@@ -78,11 +96,11 @@ func RemoteHub(c *csconfig.Config) *cwhub.RemoteHubCfg {
 
 // Hub initializes the hub. If a remote configuration is provided, it can be used to download the index and items.
 // If no remote parameter is provided, the hub can only be used for local operations.
-func Hub(c *csconfig.Config, remote *cwhub.RemoteHubCfg, logger *logrus.Logger) (*cwhub.Hub, error) {
+func Hub(c *csconfig.Config, logger *logrus.Logger) (*cwhub.Hub, error) {
 	local := c.Hub
 
 	if local == nil {
-		return nil, fmt.Errorf("you must configure cli before interacting with hub")
+		return nil, errors.New("you must configure cli before interacting with hub")
 	}
 
 	if logger == nil {
@@ -90,9 +108,13 @@ func Hub(c *csconfig.Config, remote *cwhub.RemoteHubCfg, logger *logrus.Logger) 
 		logger.SetOutput(io.Discard)
 	}
 
-	hub, err := cwhub.NewHub(local, remote, false, logger)
+	hub, err := cwhub.NewHub(local, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read Hub index: %w. Run 'sudo cscli hub update' to download the index again", err)
+		return nil, err
+	}
+
+	if err := hub.Load(); err != nil {
+		return nil, err
 	}
 
 	return hub, nil

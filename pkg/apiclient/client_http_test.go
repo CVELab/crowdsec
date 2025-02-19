@@ -2,30 +2,28 @@ package apiclient
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/crowdsecurity/go-cs-lib/cstest"
-	"github.com/crowdsecurity/go-cs-lib/version"
 )
 
 func TestNewRequestInvalid(t *testing.T) {
 	mux, urlx, teardown := setup()
 	defer teardown()
 
-	//missing slash in uri
+	// missing slash in uri
 	apiURL, err := url.Parse(urlx)
 	require.NoError(t, err)
 
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", version.String()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})
@@ -34,7 +32,8 @@ func TestNewRequestInvalid(t *testing.T) {
 	/*mock login*/
 	mux.HandleFunc("/watchers/login", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"code": 401, "message" : "bad login/password"}`))
+		_, err := w.Write([]byte(`{"code": 401, "message" : "bad login/password"}`))
+		assert.NoError(t, err)
 	})
 
 	mux.HandleFunc("/alerts", func(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +56,6 @@ func TestNewRequestTimeout(t *testing.T) {
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", version.String()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})
