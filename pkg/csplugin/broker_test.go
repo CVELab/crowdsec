@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/tomb.v2"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/crowdsecurity/go-cs-lib/cstest"
 
@@ -38,7 +38,7 @@ func (s *PluginSuite) readconfig() PluginConfig {
 	require.NoError(t, err, "unable to read config file %s", s.pluginConfig)
 
 	err = yaml.Unmarshal(orig, &config)
-	require.NoError(t, err, "unable to unmarshal config file")
+	require.NoError(t, err, "unable to parse config file")
 
 	return config
 }
@@ -46,13 +46,14 @@ func (s *PluginSuite) readconfig() PluginConfig {
 func (s *PluginSuite) writeconfig(config PluginConfig) {
 	t := s.T()
 	data, err := yaml.Marshal(&config)
-	require.NoError(t, err, "unable to marshal config file")
+	require.NoError(t, err, "unable to serialize config file")
 
-	err = os.WriteFile(s.pluginConfig, data, 0644)
+	err = os.WriteFile(s.pluginConfig, data, 0o644)
 	require.NoError(t, err, "unable to write config file %s", s.pluginConfig)
 }
 
 func (s *PluginSuite) TestBrokerInit() {
+	ctx := s.T().Context()
 	tests := []struct {
 		name        string
 		action      func(*testing.T)
@@ -129,26 +130,28 @@ func (s *PluginSuite) TestBrokerInit() {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		s.Run(tc.name, func() {
 			t := s.T()
 			if tc.action != nil {
 				tc.action(t)
 			}
-			_, err := s.InitBroker(&tc.procCfg)
+
+			_, err := s.InitBroker(ctx, &tc.procCfg)
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
 		})
 	}
 }
 
 func (s *PluginSuite) TestBrokerNoThreshold() {
+	ctx := s.T().Context()
+
 	var alerts []models.Alert
 
 	DefaultEmptyTicker = 50 * time.Millisecond
 
 	t := s.T()
 
-	pb, err := s.InitBroker(nil)
+	pb, err := s.InitBroker(ctx, nil)
 	require.NoError(t, err)
 
 	tomb := tomb.Tomb{}
@@ -187,6 +190,8 @@ func (s *PluginSuite) TestBrokerNoThreshold() {
 }
 
 func (s *PluginSuite) TestBrokerRunGroupAndTimeThreshold_TimeFirst() {
+	ctx := s.T().Context()
+
 	// test grouping by "time"
 	DefaultEmptyTicker = 50 * time.Millisecond
 
@@ -198,7 +203,7 @@ func (s *PluginSuite) TestBrokerRunGroupAndTimeThreshold_TimeFirst() {
 	cfg.GroupWait = 1 * time.Second
 	s.writeconfig(cfg)
 
-	pb, err := s.InitBroker(nil)
+	pb, err := s.InitBroker(ctx, nil)
 	require.NoError(t, err)
 
 	tomb := tomb.Tomb{}
@@ -224,6 +229,7 @@ func (s *PluginSuite) TestBrokerRunGroupAndTimeThreshold_TimeFirst() {
 }
 
 func (s *PluginSuite) TestBrokerRunGroupAndTimeThreshold_CountFirst() {
+	ctx := s.T().Context()
 	DefaultEmptyTicker = 50 * time.Millisecond
 
 	t := s.T()
@@ -234,7 +240,7 @@ func (s *PluginSuite) TestBrokerRunGroupAndTimeThreshold_CountFirst() {
 	cfg.GroupWait = 4 * time.Second
 	s.writeconfig(cfg)
 
-	pb, err := s.InitBroker(nil)
+	pb, err := s.InitBroker(ctx, nil)
 	require.NoError(t, err)
 
 	tomb := tomb.Tomb{}
@@ -264,6 +270,7 @@ func (s *PluginSuite) TestBrokerRunGroupAndTimeThreshold_CountFirst() {
 }
 
 func (s *PluginSuite) TestBrokerRunGroupThreshold() {
+	ctx := s.T().Context()
 	// test grouping by "size"
 	DefaultEmptyTicker = 50 * time.Millisecond
 
@@ -274,7 +281,7 @@ func (s *PluginSuite) TestBrokerRunGroupThreshold() {
 	cfg.GroupThreshold = 4
 	s.writeconfig(cfg)
 
-	pb, err := s.InitBroker(nil)
+	pb, err := s.InitBroker(ctx, nil)
 	require.NoError(t, err)
 
 	tomb := tomb.Tomb{}
@@ -318,6 +325,7 @@ func (s *PluginSuite) TestBrokerRunGroupThreshold() {
 }
 
 func (s *PluginSuite) TestBrokerRunTimeThreshold() {
+	ctx := s.T().Context()
 	DefaultEmptyTicker = 50 * time.Millisecond
 
 	t := s.T()
@@ -327,7 +335,7 @@ func (s *PluginSuite) TestBrokerRunTimeThreshold() {
 	cfg.GroupWait = 1 * time.Second
 	s.writeconfig(cfg)
 
-	pb, err := s.InitBroker(nil)
+	pb, err := s.InitBroker(ctx, nil)
 	require.NoError(t, err)
 
 	tomb := tomb.Tomb{}
@@ -353,11 +361,12 @@ func (s *PluginSuite) TestBrokerRunTimeThreshold() {
 }
 
 func (s *PluginSuite) TestBrokerRunSimple() {
+	ctx := s.T().Context()
 	DefaultEmptyTicker = 50 * time.Millisecond
 
 	t := s.T()
 
-	pb, err := s.InitBroker(nil)
+	pb, err := s.InitBroker(ctx, nil)
 	require.NoError(t, err)
 
 	tomb := tomb.Tomb{}

@@ -26,6 +26,7 @@ not if it will actually reject plugins with invalid permissions
 */
 
 func (s *PluginSuite) TestBrokerInit() {
+	ctx := s.T().Context()
 	tests := []struct {
 		name        string
 		action      func(*testing.T)
@@ -54,13 +55,12 @@ func (s *PluginSuite) TestBrokerInit() {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		s.Run(tc.name, func() {
 			t := s.T()
 			if tc.action != nil {
 				tc.action(t)
 			}
-			_, err := s.InitBroker(&tc.procCfg)
+			_, err := s.InitBroker(ctx, &tc.procCfg)
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
 		})
 	}
@@ -68,8 +68,9 @@ func (s *PluginSuite) TestBrokerInit() {
 
 func (s *PluginSuite) TestBrokerRun() {
 	t := s.T()
+	ctx := t.Context()
 
-	pb, err := s.InitBroker(nil)
+	pb, err := s.InitBroker(ctx, nil)
 	require.NoError(t, err)
 
 	tomb := tomb.Tomb{}

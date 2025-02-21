@@ -1,10 +1,9 @@
 package apiclient
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	log "github.com/sirupsen/logrus"
@@ -13,13 +12,13 @@ import (
 
 	"github.com/crowdsecurity/go-cs-lib/cstest"
 	"github.com/crowdsecurity/go-cs-lib/ptr"
-	"github.com/crowdsecurity/go-cs-lib/version"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/crowdsecurity/crowdsec/pkg/modelscapi"
 )
 
 func TestDecisionsList(t *testing.T) {
+	ctx := t.Context()
 	log.SetLevel(log.DebugLevel)
 
 	mux, urlx, teardown := setup()
@@ -27,22 +26,24 @@ func TestDecisionsList(t *testing.T) {
 
 	mux.HandleFunc("/decisions", func(w http.ResponseWriter, r *http.Request) {
 		testMethod(t, r, "GET")
+
 		if r.URL.RawQuery == "ip=1.2.3.4" {
 			assert.Equal(t, "ip=1.2.3.4", r.URL.RawQuery)
 			assert.Equal(t, "ixu", r.Header.Get("X-Api-Key"))
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`[{"duration":"3h59m55.756182786s","id":4,"origin":"cscli","scenario":"manual 'ban' from '82929df7ee394b73b81252fe3b4e50203yaT2u6nXiaN7Ix9'","scope":"Ip","type":"ban","value":"1.2.3.4"}]`))
+			_, err := w.Write([]byte(`[{"duration":"3h59m55.756182786s","id":4,"origin":"cscli","scenario":"manual 'ban' from '82929df7ee394b73b81252fe3b4e50203yaT2u6nXiaN7Ix9'","scope":"Ip","type":"ban","value":"1.2.3.4"}]`))
+			assert.NoError(t, err)
 		} else {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`null`))
-			//no results
+			_, err := w.Write([]byte(`null`))
+			assert.NoError(t, err)
 		}
 	})
 
 	apiURL, err := url.Parse(urlx + "/")
 	require.NoError(t, err)
 
-	//ok answer
+	// ok answer
 	auth := &APIKeyTransport{
 		APIKey: "ixu",
 	}
@@ -64,20 +65,21 @@ func TestDecisionsList(t *testing.T) {
 
 	// OK decisions
 	decisionsFilter := DecisionsListOpts{IPEquals: ptr.Of("1.2.3.4")}
-	decisions, resp, err := newcli.Decisions.List(context.Background(), decisionsFilter)
+	decisions, resp, err := newcli.Decisions.List(ctx, decisionsFilter)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 	assert.Equal(t, *expected, *decisions)
 
-	//Empty return
+	// Empty return
 	decisionsFilter = DecisionsListOpts{IPEquals: ptr.Of("1.2.3.5")}
-	decisions, resp, err = newcli.Decisions.List(context.Background(), decisionsFilter)
+	decisions, resp, err = newcli.Decisions.List(ctx, decisionsFilter)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 	assert.Empty(t, *decisions)
 }
 
 func TestDecisionsStream(t *testing.T) {
+	ctx := t.Context()
 	log.SetLevel(log.DebugLevel)
 
 	mux, urlx, teardown := setup()
@@ -86,13 +88,16 @@ func TestDecisionsStream(t *testing.T) {
 	mux.HandleFunc("/decisions/stream", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "ixu", r.Header.Get("X-Api-Key"))
 		testMethod(t, r, http.MethodGet)
+
 		if r.Method == http.MethodGet {
-			if r.URL.RawQuery == "startup=true" {
+			if strings.Contains(r.URL.RawQuery, "startup=true") {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"deleted":null,"new":[{"duration":"3h59m55.756182786s","id":4,"origin":"cscli","scenario":"manual 'ban' from '82929df7ee394b73b81252fe3b4e50203yaT2u6nXiaN7Ix9'","scope":"Ip","type":"ban","value":"1.2.3.4"}]}`))
+				_, err := w.Write([]byte(`{"deleted":null,"new":[{"duration":"3h59m55.756182786s","id":4,"origin":"cscli","scenario":"manual 'ban' from '82929df7ee394b73b81252fe3b4e50203yaT2u6nXiaN7Ix9'","scope":"Ip","type":"ban","value":"1.2.3.4"}]}`))
+				assert.NoError(t, err)
 			} else {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"deleted":null,"new":null}`))
+				_, err := w.Write([]byte(`{"deleted":null,"new":null}`))
+				assert.NoError(t, err)
 			}
 		}
 	})
@@ -100,6 +105,7 @@ func TestDecisionsStream(t *testing.T) {
 	mux.HandleFunc("/decisions", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "ixu", r.Header.Get("X-Api-Key"))
 		testMethod(t, r, http.MethodDelete)
+
 		if r.Method == http.MethodDelete {
 			w.WriteHeader(http.StatusOK)
 		}
@@ -108,7 +114,7 @@ func TestDecisionsStream(t *testing.T) {
 	apiURL, err := url.Parse(urlx + "/")
 	require.NoError(t, err)
 
-	//ok answer
+	// ok answer
 	auth := &APIKeyTransport{
 		APIKey: "ixu",
 	}
@@ -130,25 +136,26 @@ func TestDecisionsStream(t *testing.T) {
 		},
 	}
 
-	decisions, resp, err := newcli.Decisions.GetStream(context.Background(), DecisionsStreamOpts{Startup: true})
+	decisions, resp, err := newcli.Decisions.GetStream(ctx, DecisionsStreamOpts{Startup: true})
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 	assert.Equal(t, *expected, *decisions)
 
-	//and second call, we get empty lists
-	decisions, resp, err = newcli.Decisions.GetStream(context.Background(), DecisionsStreamOpts{Startup: false})
+	// and second call, we get empty lists
+	decisions, resp, err = newcli.Decisions.GetStream(ctx, DecisionsStreamOpts{Startup: false})
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 	assert.Empty(t, decisions.New)
 	assert.Empty(t, decisions.Deleted)
 
-	//delete stream
-	resp, err = newcli.Decisions.StopStream(context.Background())
+	// delete stream
+	resp, err = newcli.Decisions.StopStream(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 }
 
 func TestDecisionsStreamV3Compatibility(t *testing.T) {
+	ctx := t.Context()
 	log.SetLevel(log.DebugLevel)
 
 	mux, urlx, teardown := setupWithPrefix("v3")
@@ -157,13 +164,16 @@ func TestDecisionsStreamV3Compatibility(t *testing.T) {
 	mux.HandleFunc("/decisions/stream", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "ixu", r.Header.Get("X-Api-Key"))
 		testMethod(t, r, http.MethodGet)
+
 		if r.Method == http.MethodGet {
-			if r.URL.RawQuery == "startup=true" {
+			if strings.Contains(r.URL.RawQuery, "startup=true") {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"deleted":[{"scope":"ip","decisions":["1.2.3.5"]}],"new":[{"scope":"ip", "scenario": "manual 'ban' from '82929df7ee394b73b81252fe3b4e50203yaT2u6nXiaN7Ix9'", "decisions":[{"duration":"3h59m55.756182786s","value":"1.2.3.4"}]}]}`))
+				_, err := w.Write([]byte(`{"deleted":[{"scope":"ip","decisions":["1.2.3.5"]}],"new":[{"scope":"ip", "scenario": "manual 'ban' from '82929df7ee394b73b81252fe3b4e50203yaT2u6nXiaN7Ix9'", "decisions":[{"duration":"3h59m55.756182786s","value":"1.2.3.4"}]}]}`))
+				assert.NoError(t, err)
 			} else {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"deleted":null,"new":null}`))
+				_, err := w.Write([]byte(`{"deleted":null,"new":null}`))
+				assert.NoError(t, err)
 			}
 		}
 	})
@@ -171,7 +181,7 @@ func TestDecisionsStreamV3Compatibility(t *testing.T) {
 	apiURL, err := url.Parse(urlx + "/")
 	require.NoError(t, err)
 
-	//ok answer
+	// ok answer
 	auth := &APIKeyTransport{
 		APIKey: "ixu",
 	}
@@ -206,13 +216,14 @@ func TestDecisionsStreamV3Compatibility(t *testing.T) {
 	}
 
 	// GetStream is supposed to consume v3 payload and return v2 response
-	decisions, resp, err := newcli.Decisions.GetStream(context.Background(), DecisionsStreamOpts{Startup: true})
+	decisions, resp, err := newcli.Decisions.GetStream(ctx, DecisionsStreamOpts{Startup: true})
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 	assert.Equal(t, *expected, *decisions)
 }
 
 func TestDecisionsStreamV3(t *testing.T) {
+	ctx := t.Context()
 	log.SetLevel(log.DebugLevel)
 
 	mux, urlx, teardown := setupWithPrefix("v3")
@@ -221,18 +232,20 @@ func TestDecisionsStreamV3(t *testing.T) {
 	mux.HandleFunc("/decisions/stream", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "ixu", r.Header.Get("X-Api-Key"))
 		testMethod(t, r, http.MethodGet)
+
 		if r.Method == http.MethodGet {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"deleted":[{"scope":"ip","decisions":["1.2.3.5"]}],
+			_, err := w.Write([]byte(`{"deleted":[{"scope":"ip","decisions":["1.2.3.5"]}],
 			"new":[{"scope":"ip", "scenario": "manual 'ban' from '82929df7ee394b73b81252fe3b4e50203yaT2u6nXiaN7Ix9'", "decisions":[{"duration":"3h59m55.756182786s","value":"1.2.3.4"}]}],
 			"links": {"blocklists":[{"name":"blocklist1","url":"/v3/blocklist","scope":"ip","remediation":"ban","duration":"24h"}]}}`))
+			assert.NoError(t, err)
 		}
 	})
 
 	apiURL, err := url.Parse(urlx + "/")
 	require.NoError(t, err)
 
-	//ok answer
+	// ok answer
 	auth := &APIKeyTransport{
 		APIKey: "ixu",
 	}
@@ -276,13 +289,14 @@ func TestDecisionsStreamV3(t *testing.T) {
 	}
 
 	// GetStream is supposed to consume v3 payload and return v2 response
-	decisions, resp, err := newcli.Decisions.GetStreamV3(context.Background(), DecisionsStreamOpts{Startup: true})
+	decisions, resp, err := newcli.Decisions.GetStreamV3(ctx, DecisionsStreamOpts{Startup: true})
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.Response.StatusCode)
 	assert.Equal(t, *expected, *decisions)
 }
 
 func TestDecisionsFromBlocklist(t *testing.T) {
+	ctx := t.Context()
 	log.SetLevel(log.DebugLevel)
 
 	mux, urlx, teardown := setupWithPrefix("v3")
@@ -299,14 +313,15 @@ func TestDecisionsFromBlocklist(t *testing.T) {
 
 		if r.Method == http.MethodGet {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("1.2.3.4\r\n1.2.3.5"))
+			_, err := w.Write([]byte("1.2.3.4\r\n1.2.3.5"))
+			assert.NoError(t, err)
 		}
 	})
 
 	apiURL, err := url.Parse(urlx + "/")
 	require.NoError(t, err)
 
-	//ok answer
+	// ok answer
 	auth := &APIKeyTransport{
 		APIKey: "ixu",
 	}
@@ -338,7 +353,7 @@ func TestDecisionsFromBlocklist(t *testing.T) {
 			Origin:   &torigin,
 		},
 	}
-	decisions, isModified, err := newcli.Decisions.GetDecisionsFromBlocklist(context.Background(), &modelscapi.BlocklistLink{
+	decisions, isModified, err := newcli.Decisions.GetDecisionsFromBlocklist(ctx, &modelscapi.BlocklistLink{
 		URL:         &turlBlocklist,
 		Scope:       &tscopeBlocklist,
 		Remediation: &tremediationBlocklist,
@@ -357,7 +372,7 @@ func TestDecisionsFromBlocklist(t *testing.T) {
 	assert.Equal(t, expected, decisions)
 
 	// test cache control
-	_, isModified, err = newcli.Decisions.GetDecisionsFromBlocklist(context.Background(), &modelscapi.BlocklistLink{
+	_, isModified, err = newcli.Decisions.GetDecisionsFromBlocklist(ctx, &modelscapi.BlocklistLink{
 		URL:         &turlBlocklist,
 		Scope:       &tscopeBlocklist,
 		Remediation: &tremediationBlocklist,
@@ -368,7 +383,7 @@ func TestDecisionsFromBlocklist(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, isModified)
 
-	_, isModified, err = newcli.Decisions.GetDecisionsFromBlocklist(context.Background(), &modelscapi.BlocklistLink{
+	_, isModified, err = newcli.Decisions.GetDecisionsFromBlocklist(ctx, &modelscapi.BlocklistLink{
 		URL:         &turlBlocklist,
 		Scope:       &tscopeBlocklist,
 		Remediation: &tremediationBlocklist,
@@ -381,18 +396,22 @@ func TestDecisionsFromBlocklist(t *testing.T) {
 }
 
 func TestDeleteDecisions(t *testing.T) {
+	ctx := t.Context()
+
 	mux, urlx, teardown := setup()
 	mux.HandleFunc("/watchers/login", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		_, err := w.Write([]byte(`{"code": 200, "expire": "2030-01-02T15:04:05Z", "token": "oklol"}`))
+		assert.NoError(t, err)
 	})
 
 	mux.HandleFunc("/decisions", func(w http.ResponseWriter, r *http.Request) {
 		testMethod(t, r, "DELETE")
 		assert.Equal(t, "ip=1.2.3.4", r.URL.RawQuery)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"nbDeleted":"1"}`))
-		//w.Write([]byte(`{"message":"0 deleted alerts"}`))
+		_, err := w.Write([]byte(`{"nbDeleted":"1"}`))
+		assert.NoError(t, err)
+		// w.Write([]byte(`{"message":"0 deleted alerts"}`))
 	})
 
 	log.Printf("URL is %s", urlx)
@@ -403,7 +422,6 @@ func TestDeleteDecisions(t *testing.T) {
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", version.String()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})
@@ -412,7 +430,7 @@ func TestDeleteDecisions(t *testing.T) {
 	filters := DecisionsDeleteOpts{IPEquals: new(string)}
 	*filters.IPEquals = "1.2.3.4"
 
-	deleted, _, err := client.Decisions.Delete(context.Background(), filters)
+	deleted, _, err := client.Decisions.Delete(ctx, filters)
 	require.NoError(t, err)
 	assert.Equal(t, "1", deleted.NbDeleted)
 
@@ -427,6 +445,8 @@ func TestDecisionsStreamOpts_addQueryParamsToURL(t *testing.T) {
 		Scopes                 string
 		ScenariosContaining    string
 		ScenariosNotContaining string
+		CommunityPull          bool
+		AdditionalPull         bool
 	}
 
 	tests := []struct {
@@ -438,11 +458,17 @@ func TestDecisionsStreamOpts_addQueryParamsToURL(t *testing.T) {
 		{
 			name:     "no filter",
 			expected: baseURLString + "?",
+			fields: fields{
+				CommunityPull:  true,
+				AdditionalPull: true,
+			},
 		},
 		{
 			name: "startup=true",
 			fields: fields{
-				Startup: true,
+				Startup:        true,
+				CommunityPull:  true,
+				AdditionalPull: true,
 			},
 			expected: baseURLString + "?startup=true",
 		},
@@ -453,23 +479,35 @@ func TestDecisionsStreamOpts_addQueryParamsToURL(t *testing.T) {
 				Scopes:                 "ip,range",
 				ScenariosContaining:    "ssh",
 				ScenariosNotContaining: "bf",
+				CommunityPull:          true,
+				AdditionalPull:         true,
 			},
 			expected: baseURLString + "?scenarios_containing=ssh&scenarios_not_containing=bf&scopes=ip%2Crange&startup=true",
+		},
+		{
+			name: "pull options",
+			fields: fields{
+				CommunityPull:  false,
+				AdditionalPull: false,
+			},
+			expected: baseURLString + "?additional_pull=false&community_pull=false",
 		},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			o := &DecisionsStreamOpts{
 				Startup:                tt.fields.Startup,
 				Scopes:                 tt.fields.Scopes,
 				ScenariosContaining:    tt.fields.ScenariosContaining,
 				ScenariosNotContaining: tt.fields.ScenariosNotContaining,
+				CommunityPull:          tt.fields.CommunityPull,
+				AdditionalPull:         tt.fields.AdditionalPull,
 			}
 
 			got, err := o.addQueryParamsToURL(baseURLString)
 			cstest.RequireErrorContains(t, err, tt.expectedErr)
+
 			if tt.expectedErr != "" {
 				return
 			}
@@ -504,7 +542,6 @@ func TestDecisionsStreamOpts_addQueryParamsToURL(t *testing.T) {
 // 	client, err := NewClient(&Config{
 // 		MachineID:     "test_login",
 // 		Password:      "test_password",
-// 		UserAgent:     fmt.Sprintf("crowdsec/%s", cwversion.VersionStr()),
 // 		URL:           apiURL,
 // 		VersionPrefix: "v1",
 // 	})

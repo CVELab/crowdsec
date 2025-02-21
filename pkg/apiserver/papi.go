@@ -3,6 +3,7 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -21,21 +22,15 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/types"
 )
 
-var (
-	SyncInterval = time.Second * 10
-)
+const SyncInterval = time.Second * 10
 
-const (
-	PapiPullKey = "papi:last_pull"
-)
+const PapiPullKey = "papi:last_pull"
 
-var (
-	operationMap = map[string]func(*Message, *Papi, bool) error{
-		"decision":   DecisionCmd,
-		"alert":      AlertCmd,
-		"management": ManagementCmd,
-	}
-)
+var operationMap = map[string]func(*Message, *Papi, bool) error{
+	"decision":   DecisionCmd,
+	"alert":      AlertCmd,
+	"management": ManagementCmd,
+}
 
 type Header struct {
 	OperationType string    `json:"operation_type"`
@@ -87,21 +82,21 @@ type PapiPermCheckSuccess struct {
 }
 
 func NewPAPI(apic *apic, dbClient *database.Client, consoleConfig *csconfig.ConsoleConfig, logLevel log.Level) (*Papi, error) {
-
 	logger := log.New()
 	if err := types.ConfigureLogger(logger); err != nil {
-		return &Papi{}, fmt.Errorf("creating papi logger: %s", err)
+		return &Papi{}, fmt.Errorf("creating papi logger: %w", err)
 	}
+
 	logger.SetLevel(logLevel)
 
 	papiUrl := *apic.apiClient.PapiURL
 	papiUrl.Path = fmt.Sprintf("%s%s", types.PAPIVersion, types.PAPIPollUrl)
+
 	longPollClient, err := longpollclient.NewLongPollClient(longpollclient.LongPollClientConfig{
 		Url:        papiUrl,
 		Logger:     logger,
 		HttpClient: apic.apiClient.GetClient(),
 	})
-
 	if err != nil {
 		return &Papi{}, fmt.Errorf("failed to create PAPI client: %w", err)
 	}
@@ -132,55 +127,69 @@ func NewPAPI(apic *apic, dbClient *database.Client, consoleConfig *csconfig.Cons
 func (p *Papi) handleEvent(event longpollclient.Event, sync bool) error {
 	logger := p.Logger.WithField("request-id", event.RequestId)
 	logger.Debugf("message received: %+v", event.Data)
+
 	message := &Message{}
 	if err := json.Unmarshal([]byte(event.Data), message); err != nil {
-		return fmt.Errorf("polling papi message format is not compatible: %+v: %s", event.Data, err)
-	}
-	if message.Header == nil {
-		return fmt.Errorf("no header in message, skipping")
-	}
-	if message.Header.Source == nil {
-		return fmt.Errorf("no source user in header message, skipping")
+		return fmt.Errorf("polling papi message format is not compatible: %+v: %w", event.Data, err)
 	}
 
-	if operationFunc, ok := operationMap[message.Header.OperationType]; ok {
-		logger.Debugf("Calling operation '%s'", message.Header.OperationType)
-		err := operationFunc(message, p, sync)
-		if err != nil {
-			return fmt.Errorf("'%s %s failed: %s", message.Header.OperationType, message.Header.OperationCmd, err)
-		}
-	} else {
+	if message.Header == nil {
+		return errors.New("no header in message, skipping")
+	}
+
+	if message.Header.Source == nil {
+		return errors.New("no source user in header message, skipping")
+	}
+
+	operationFunc, ok := operationMap[message.Header.OperationType]
+	if !ok {
 		return fmt.Errorf("operation '%s' unknown, continue", message.Header.OperationType)
 	}
+
+	logger.Debugf("Calling operation '%s'", message.Header.OperationType)
+
+	err := operationFunc(message, p, sync)
+	if err != nil {
+		return fmt.Errorf("'%s %s failed: %w", message.Header.OperationType, message.Header.OperationCmd, err)
+	}
+
 	return nil
 }
 
-func (p *Papi) GetPermissions() (PapiPermCheckSuccess, error) {
+func (p *Papi) GetPermissions(ctx context.Context) (PapiPermCheckSuccess, error) {
 	httpClient := p.apiClient.GetClient()
 	papiCheckUrl := fmt.Sprintf("%s%s%s", p.URL, types.PAPIVersion, types.PAPIPermissionsUrl)
-	req, err := http.NewRequest(http.MethodGet, papiCheckUrl, nil)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, papiCheckUrl, nil)
 	if err != nil {
-		return PapiPermCheckSuccess{}, fmt.Errorf("failed to create request : %s", err)
+		return PapiPermCheckSuccess{}, fmt.Errorf("failed to create request: %w", err)
 	}
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Fatalf("failed to get response : %s", err)
+		return PapiPermCheckSuccess{}, fmt.Errorf("failed to get response: %w", err)
 	}
 
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		errResp := PapiPermCheckError{}
+
 		err = json.NewDecoder(resp.Body).Decode(&errResp)
 		if err != nil {
-			return PapiPermCheckSuccess{}, fmt.Errorf("failed to decode response : %s", err)
+			return PapiPermCheckSuccess{}, fmt.Errorf("failed to decode response: %w", err)
 		}
+
 		return PapiPermCheckSuccess{}, fmt.Errorf("unable to query PAPI : %s (%d)", errResp.Error, resp.StatusCode)
 	}
+
 	respBody := PapiPermCheckSuccess{}
+
 	err = json.NewDecoder(resp.Body).Decode(&respBody)
 	if err != nil {
-		return PapiPermCheckSuccess{}, fmt.Errorf("failed to decode response : %s", err)
+		return PapiPermCheckSuccess{}, fmt.Errorf("failed to decode response: %w", err)
 	}
+
 	return respBody, nil
 }
 
@@ -196,13 +205,13 @@ func reverse(s []longpollclient.Event) []longpollclient.Event {
 	return a
 }
 
-func (p *Papi) PullOnce(since time.Time, sync bool) error {
-	events, err := p.Client.PullOnce(since)
+func (p *Papi) PullOnce(ctx context.Context, since time.Time, sync bool) error {
+	events, err := p.Client.PullOnce(ctx, since)
 	if err != nil {
 		return err
 	}
 
-	reversedEvents := reverse(events) //PAPI sends events in the reverse order, which is not an issue when pulling them in real time, but here we need the correct order
+	reversedEvents := reverse(events) // PAPI sends events in the reverse order, which is not an issue when pulling them in real time, but here we need the correct order
 	eventsCount := len(events)
 	p.Logger.Infof("received %d events", eventsCount)
 
@@ -215,51 +224,51 @@ func (p *Papi) PullOnce(since time.Time, sync bool) error {
 	}
 
 	p.Logger.Debugf("finished handling events")
-	//Don't update the timestamp in DB, as a "real" LAPI might be running
-	//Worst case, crowdsec will receive a few duplicated events and will discard them
+	// Don't update the timestamp in DB, as a "real" LAPI might be running
+	// Worst case, crowdsec will receive a few duplicated events and will discard them
 	return nil
 }
 
 // PullPAPI is the long polling client for real-time decisions from PAPI
-func (p *Papi) Pull() error {
+func (p *Papi) Pull(ctx context.Context) error {
 	defer trace.CatchPanic("lapi/PullPAPI")
 	p.Logger.Infof("Starting Polling API Pull")
 
 	lastTimestamp := time.Time{}
 
-	lastTimestampStr, err := p.DBClient.GetConfigItem(PapiPullKey)
+	lastTimestampStr, err := p.DBClient.GetConfigItem(ctx, PapiPullKey)
 	if err != nil {
 		p.Logger.Warningf("failed to get last timestamp for papi pull: %s", err)
 	}
 
-	//value doesn't exist, it's first time we're pulling
+	// value doesn't exist, it's first time we're pulling
 	if lastTimestampStr == nil {
 		binTime, err := lastTimestamp.MarshalText()
 		if err != nil {
-			return fmt.Errorf("failed to marshal last timestamp: %w", err)
+			return fmt.Errorf("failed to serialize last timestamp: %w", err)
 		}
 
-		if err := p.DBClient.SetConfigItem(PapiPullKey, string(binTime)); err != nil {
+		if err := p.DBClient.SetConfigItem(ctx, PapiPullKey, string(binTime)); err != nil {
 			p.Logger.Errorf("error setting papi pull last key: %s", err)
 		} else {
 			p.Logger.Debugf("config item '%s' set in database with value '%s'", PapiPullKey, string(binTime))
 		}
 	} else {
 		if err := lastTimestamp.UnmarshalText([]byte(*lastTimestampStr)); err != nil {
-			return fmt.Errorf("failed to unmarshal last timestamp: %w", err)
+			return fmt.Errorf("failed to parse last timestamp: %w", err)
 		}
 	}
 
 	p.Logger.Infof("Starting PAPI pull (since:%s)", lastTimestamp)
 
-	for event := range p.Client.Start(lastTimestamp) {
+	for event := range p.Client.Start(ctx, lastTimestamp) {
 		logger := p.Logger.WithField("request-id", event.RequestId)
-		//update last timestamp in database
+		// update last timestamp in database
 		newTime := time.Now().UTC()
 
 		binTime, err := newTime.MarshalText()
 		if err != nil {
-			return fmt.Errorf("failed to marshal last timestamp: %w", err)
+			return fmt.Errorf("failed to serialize last timestamp: %w", err)
 		}
 
 		err = p.handleEvent(event, false)
@@ -268,7 +277,7 @@ func (p *Papi) Pull() error {
 			continue
 		}
 
-		if err := p.DBClient.SetConfigItem(PapiPullKey, string(binTime)); err != nil {
+		if err := p.DBClient.SetConfigItem(ctx, PapiPullKey, string(binTime)); err != nil {
 			return fmt.Errorf("failed to update last timestamp: %w", err)
 		}
 
@@ -278,7 +287,7 @@ func (p *Papi) Pull() error {
 	return nil
 }
 
-func (p *Papi) SyncDecisions() error {
+func (p *Papi) SyncDecisions(ctx context.Context) error {
 	defer trace.CatchPanic("lapi/syncDecisionsToCAPI")
 
 	var cache models.DecisionsDeleteRequest
@@ -295,7 +304,7 @@ func (p *Papi) SyncDecisions() error {
 				return nil
 			}
 
-			go p.SendDeletedDecisions(&cache)
+			go p.SendDeletedDecisions(ctx, &cache)
 
 			return nil
 		case <-ticker.C:
@@ -306,7 +315,7 @@ func (p *Papi) SyncDecisions() error {
 				p.mu.Unlock()
 				p.Logger.Infof("sync decisions: %d deleted decisions to push", len(cacheCopy))
 
-				go p.SendDeletedDecisions(&cacheCopy)
+				go p.SendDeletedDecisions(ctx, &cacheCopy)
 			}
 		case deletedDecisions := <-p.Channels.DeleteDecisionChannel:
 			if (p.consoleConfig.ShareManualDecisions != nil && *p.consoleConfig.ShareManualDecisions) || (p.consoleConfig.ConsoleManagement != nil && *p.consoleConfig.ConsoleManagement) {
@@ -326,45 +335,34 @@ func (p *Papi) SyncDecisions() error {
 	}
 }
 
-func (p *Papi) SendDeletedDecisions(cacheOrig *models.DecisionsDeleteRequest) {
-	var (
-		cache []models.DecisionsDeleteRequestItem = *cacheOrig
-		send models.DecisionsDeleteRequest
-	)
+func (p *Papi) sendDeletedDecisionsBatch(ctx context.Context, decisions []models.DecisionsDeleteRequestItem) error {
+	ctxBatch, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
-	bulkSize := 50
-	pageStart := 0
-	pageEnd := bulkSize
+	_, _, err := p.apiClient.DecisionDelete.Add(ctxBatch, (*models.DecisionsDeleteRequest)(&decisions))
+	if err != nil {
+		return err
+	}
 
-	for {
-		if pageEnd >= len(cache) {
-			send = cache[pageStart:]
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return nil
+}
 
-			defer cancel()
+func (p *Papi) SendDeletedDecisions(ctx context.Context, cacheOrig *models.DecisionsDeleteRequest) {
+	var cache []models.DecisionsDeleteRequestItem = *cacheOrig
 
-			_, _, err := p.apiClient.DecisionDelete.Add(ctx, &send)
-			if err != nil {
-				p.Logger.Errorf("sending deleted decisions to central API: %s", err)
-				return
-			}
+	batchSize := 50
 
-			break
+	for start := 0; start < len(cache); start += batchSize {
+		end := start + batchSize
+
+		if end > len(cache) {
+			end = len(cache)
 		}
 
-		send = cache[pageStart:pageEnd]
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-		defer cancel()
-
-		_, _, err := p.apiClient.DecisionDelete.Add(ctx, &send)
-		if err != nil {
-			//we log it here as well, because the return value of func might be discarded
+		if err := p.sendDeletedDecisionsBatch(ctx, cache[start:end]); err != nil {
 			p.Logger.Errorf("sending deleted decisions to central API: %s", err)
+			return
 		}
-
-		pageStart += bulkSize
-		pageEnd += bulkSize
 	}
 }
 

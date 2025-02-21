@@ -14,10 +14,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
-	"github.com/crowdsecurity/crowdsec/pkg/types"
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/tomb.v2"
+
+	"github.com/crowdsecurity/crowdsec/pkg/acquisition/configuration"
+	"github.com/crowdsecurity/crowdsec/pkg/types"
 )
 
 func TestBadConfiguration(t *testing.T) {
@@ -66,10 +68,12 @@ sqs_name: foobar
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			f := S3Source{}
-			err := f.Configure([]byte(test.config), nil)
+
+			err := f.Configure([]byte(test.config), nil, configuration.METRICS_NONE)
 			if err == nil {
 				t.Fatalf("expected error, got none")
 			}
+
 			if err.Error() != test.expectedErr {
 				t.Fatalf("expected error %s, got %s", test.expectedErr, err.Error())
 			}
@@ -111,7 +115,8 @@ polling_method: list
 		t.Run(test.name, func(t *testing.T) {
 			f := S3Source{}
 			logger := log.NewEntry(log.New())
-			err := f.Configure([]byte(test.config), logger)
+
+			err := f.Configure([]byte(test.config), logger, configuration.METRICS_NONE)
 			if err != nil {
 				t.Fatalf("unexpected error: %s", err.Error())
 			}
@@ -206,6 +211,7 @@ func (msqs mockSQSClientNotif) DeleteMessage(input *sqs.DeleteMessageInput) (*sq
 }
 
 func TestDSNAcquis(t *testing.T) {
+	ctx := t.Context()
 	tests := []struct {
 		name               string
 		dsn                string
@@ -258,20 +264,19 @@ func TestDSNAcquis(t *testing.T) {
 
 			f.s3Client = mockS3Client{}
 			tmb := tomb.Tomb{}
-			err = f.OneShotAcquisition(out, &tmb)
+			err = f.OneShotAcquisition(ctx, out, &tmb)
 			if err != nil {
 				t.Fatalf("unexpected error: %s", err.Error())
 			}
 			time.Sleep(2 * time.Second)
 			done <- true
 			assert.Equal(t, test.expectedCount, linesRead)
-
 		})
 	}
-
 }
 
 func TestListPolling(t *testing.T) {
+	ctx := t.Context()
 	tests := []struct {
 		name          string
 		config        string
@@ -306,7 +311,7 @@ prefix: foo/
 			f := S3Source{}
 			logger := log.NewEntry(log.New())
 			logger.Logger.SetLevel(log.TraceLevel)
-			err := f.Configure([]byte(test.config), logger)
+			err := f.Configure([]byte(test.config), logger, configuration.METRICS_NONE)
 			if err != nil {
 				t.Fatalf("unexpected error: %s", err.Error())
 			}
@@ -331,8 +336,7 @@ prefix: foo/
 				}
 			}()
 
-			err = f.StreamingAcquisition(out, &tb)
-
+			err = f.StreamingAcquisition(ctx, out, &tb)
 			if err != nil {
 				t.Fatalf("unexpected error: %s", err.Error())
 			}
@@ -349,6 +353,7 @@ prefix: foo/
 }
 
 func TestSQSPoll(t *testing.T) {
+	ctx := t.Context()
 	tests := []struct {
 		name          string
 		config        string
@@ -381,7 +386,7 @@ sqs_name: test
 			linesRead := 0
 			f := S3Source{}
 			logger := log.NewEntry(log.New())
-			err := f.Configure([]byte(test.config), logger)
+			err := f.Configure([]byte(test.config), logger, configuration.METRICS_NONE)
 			if err != nil {
 				t.Fatalf("unexpected error: %s", err.Error())
 			}
@@ -412,8 +417,7 @@ sqs_name: test
 				}
 			}()
 
-			err = f.StreamingAcquisition(out, &tb)
-
+			err = f.StreamingAcquisition(ctx, out, &tb)
 			if err != nil {
 				t.Fatalf("unexpected error: %s", err.Error())
 			}

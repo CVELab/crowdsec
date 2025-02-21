@@ -58,6 +58,7 @@ config_prepare() {
     # remove trailing slash from CONFIG_DIR
     # since it's assumed to be missing during the tests
     yq e -i '
+        .api.server.listen_socket="/run/crowdsec.sock" |
         .config_paths.config_dir |= sub("/$", "")
     ' "${CONFIG_DIR}/config.yaml"
 }
@@ -69,7 +70,10 @@ make_init_data() {
     ./instance-db config-yaml
     ./instance-db setup
 
-    ./bin/preload-hub-items
+    # preload some content and data files
+    "$CSCLI" collections install crowdsecurity/linux --download-only
+    # sub-items did not respect --download-only
+    ./bin/remove-all-hub-items
 
     # when installed packages are always using sqlite, so no need to regenerate
     # local credz for sqlite

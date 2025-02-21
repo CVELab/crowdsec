@@ -2,6 +2,8 @@ package setup
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/crowdsecurity/crowdsec/pkg/cwhub"
+	"github.com/crowdsecurity/crowdsec/pkg/hubops"
 )
 
 // AcquisDocument is created from a SetupItem. It represents a single YAML document, and can be part of a multi-document file.
@@ -38,18 +41,20 @@ func decodeSetup(input []byte, fancyErrors bool) (Setup, error) {
 	dec2.KnownFields(true)
 
 	if err := dec2.Decode(&ret); err != nil {
-		return ret, fmt.Errorf("while unmarshaling setup file: %w", err)
+		return ret, fmt.Errorf("while parsing setup file: %w", err)
 	}
 
 	return ret, nil
 }
 
 // InstallHubItems installs the objects recommended in a setup file.
-func InstallHubItems(hub *cwhub.Hub, input []byte, dryRun bool) error {
+func InstallHubItems(ctx context.Context, hub *cwhub.Hub, contentProvider cwhub.ContentProvider, input []byte, interactive, dryRun, showPlan, verbosePlan bool) error {
 	setupEnvelope, err := decodeSetup(input, false)
 	if err != nil {
 		return err
 	}
+
+	plan := hubops.NewActionPlan(hub)
 
 	for _, setupItem := range setupEnvelope.Setup {
 		forceAction := false
@@ -60,84 +65,76 @@ func InstallHubItems(hub *cwhub.Hub, input []byte, dryRun bool) error {
 			continue
 		}
 
-		if len(install.Collections) > 0 {
-			for _, collection := range setupItem.Install.Collections {
-				item := hub.GetItem(cwhub.COLLECTIONS, collection)
-				if item == nil {
-					return fmt.Errorf("collection %s not found", collection)
-				}
+		for _, collection := range setupItem.Install.Collections {
+			item := hub.GetItem(cwhub.COLLECTIONS, collection)
+			if item == nil {
+				return fmt.Errorf("collection %s not found", collection)
+			}
 
-				if dryRun {
-					fmt.Println("dry-run: would install collection", collection)
+			if err := plan.AddCommand(hubops.NewDownloadCommand(item, contentProvider, forceAction)); err != nil {
+				return err
+			}
 
-					continue
-				}
-
-				if err := item.Install(forceAction, downloadOnly); err != nil {
-					return fmt.Errorf("while installing collection %s: %w", item.Name, err)
+			if !downloadOnly {
+				if err := plan.AddCommand(hubops.NewEnableCommand(item, forceAction)); err != nil {
+					return err
 				}
 			}
 		}
 
-		if len(install.Parsers) > 0 {
-			for _, parser := range setupItem.Install.Parsers {
-				if dryRun {
-					fmt.Println("dry-run: would install parser", parser)
+		for _, parser := range setupItem.Install.Parsers {
+			item := hub.GetItem(cwhub.PARSERS, parser)
+			if item == nil {
+				return fmt.Errorf("parser %s not found", parser)
+			}
 
-					continue
-				}
+			if err := plan.AddCommand(hubops.NewDownloadCommand(item, contentProvider, forceAction)); err != nil {
+				return err
+			}
 
-				item := hub.GetItem(cwhub.PARSERS, parser)
-				if item == nil {
-					return fmt.Errorf("parser %s not found", parser)
-				}
-
-				if err := item.Install(forceAction, downloadOnly); err != nil {
-					return fmt.Errorf("while installing parser %s: %w", item.Name, err)
+			if !downloadOnly {
+				if err := plan.AddCommand(hubops.NewEnableCommand(item, forceAction)); err != nil {
+					return err
 				}
 			}
 		}
 
-		if len(install.Scenarios) > 0 {
-			for _, scenario := range setupItem.Install.Scenarios {
-				if dryRun {
-					fmt.Println("dry-run: would install scenario", scenario)
+		for _, scenario := range setupItem.Install.Scenarios {
+			item := hub.GetItem(cwhub.SCENARIOS, scenario)
+			if item == nil {
+				return fmt.Errorf("scenario %s not found", scenario)
+			}
 
-					continue
-				}
+			if err := plan.AddCommand(hubops.NewDownloadCommand(item, contentProvider, forceAction)); err != nil {
+				return err
+			}
 
-				item := hub.GetItem(cwhub.SCENARIOS, scenario)
-				if item == nil {
-					return fmt.Errorf("scenario %s not found", scenario)
-				}
-
-				if err := item.Install(forceAction, downloadOnly); err != nil {
-					return fmt.Errorf("while installing scenario %s: %w", item.Name, err)
+			if !downloadOnly {
+				if err := plan.AddCommand(hubops.NewEnableCommand(item, forceAction)); err != nil {
+					return err
 				}
 			}
 		}
 
-		if len(install.PostOverflows) > 0 {
-			for _, postoverflow := range setupItem.Install.PostOverflows {
-				if dryRun {
-					fmt.Println("dry-run: would install postoverflow", postoverflow)
+		for _, postoverflow := range setupItem.Install.PostOverflows {
+			item := hub.GetItem(cwhub.POSTOVERFLOWS, postoverflow)
+			if item == nil {
+				return fmt.Errorf("postoverflow %s not found", postoverflow)
+			}
 
-					continue
-				}
+			if err := plan.AddCommand(hubops.NewDownloadCommand(item, contentProvider, forceAction)); err != nil {
+				return err
+			}
 
-				item := hub.GetItem(cwhub.POSTOVERFLOWS, postoverflow)
-				if item == nil {
-					return fmt.Errorf("postoverflow %s not found", postoverflow)
-				}
-
-				if err := item.Install(forceAction, downloadOnly); err != nil {
-					return fmt.Errorf("while installing postoverflow %s: %w", item.Name, err)
+			if !downloadOnly {
+				if err := plan.AddCommand(hubops.NewEnableCommand(item, forceAction)); err != nil {
+					return err
 				}
 			}
 		}
 	}
 
-	return nil
+	return plan.Execute(ctx, interactive, dryRun, showPlan, verbosePlan)
 }
 
 // marshalAcquisDocuments creates the monolithic file, or itemized files (if a directory is provided) with the acquisition documents.
@@ -173,7 +170,7 @@ func marshalAcquisDocuments(ads []AcquisDocument, toDir string) (string, error) 
 
 		if toDir != "" {
 			if ad.AcquisFilename == "" {
-				return "", fmt.Errorf("empty acquis filename")
+				return "", errors.New("empty acquis filename")
 			}
 
 			fname := filepath.Join(toDir, ad.AcquisFilename)
@@ -195,7 +192,9 @@ func marshalAcquisDocuments(ads []AcquisDocument, toDir string) (string, error) 
 				return "", fmt.Errorf("while writing to %s: %w", ad.AcquisFilename, err)
 			}
 
-			f.Sync()
+			if err = f.Sync(); err != nil {
+				return "", fmt.Errorf("while syncing %s: %w", ad.AcquisFilename, err)
+			}
 
 			continue
 		}

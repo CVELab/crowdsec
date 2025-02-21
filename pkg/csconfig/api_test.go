@@ -9,7 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/crowdsecurity/go-cs-lib/cstest"
 	"github.com/crowdsecurity/go-cs-lib/ptr"
@@ -64,10 +64,10 @@ func TestLoadLocalApiClientCfg(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.input.Load()
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
+
 			if tc.expectedErr != "" {
 				return
 			}
@@ -101,7 +101,7 @@ func TestLoadOnlineApiClientCfg(t *testing.T) {
 				CredentialsFilePath: "./testdata/bad_lapi-secrets.yaml",
 			},
 			expected:    &ApiCredentialsCfg{},
-			expectedErr: "failed unmarshaling api server credentials",
+			expectedErr: "failed to parse api server credentials",
 		},
 		{
 			name: "missing field configuration",
@@ -121,10 +121,10 @@ func TestLoadOnlineApiClientCfg(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.input.Load()
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
+
 			if tc.expectedErr != "" {
 				return
 			}
@@ -147,7 +147,11 @@ func TestLoadAPIServer(t *testing.T) {
 	require.NoError(t, err)
 
 	configData := os.ExpandEnv(string(fcontent))
-	err = yaml.UnmarshalStrict([]byte(configData), &config)
+
+	dec := yaml.NewDecoder(strings.NewReader(configData))
+	dec.KnownFields(true)
+
+	err = dec.Decode(&config)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -187,7 +191,8 @@ func TestLoadAPIServer(t *testing.T) {
 				DbConfig: &DatabaseCfg{
 					DbPath:           "./testdata/test.db",
 					Type:             "sqlite",
-					MaxOpenConns:     ptr.Of(DEFAULT_MAX_OPEN_CONNS),
+					MaxOpenConns:     DEFAULT_MAX_OPEN_CONNS,
+					UseWal:           ptr.Of(true), // autodetected
 					DecisionBulkSize: defaultDecisionBulkSize,
 				},
 				ConsoleConfigPath: DefaultConfigPath("console.yaml"),
@@ -207,11 +212,22 @@ func TestLoadAPIServer(t *testing.T) {
 						Login:    "test",
 						Password: "testpassword",
 					},
+					Sharing: ptr.Of(true),
+					PullConfig: CapiPullConfig{
+						Community:  ptr.Of(true),
+						Blocklists: ptr.Of(true),
+					},
 				},
 				Profiles:               tmpLAPI.Profiles,
 				ProfilesPath:           "./testdata/profiles.yaml",
 				UseForwardedForHeaders: false,
 				PapiLogLevel:           &logLevel,
+				AutoRegister: &LocalAPIAutoRegisterCfg{
+					Enable:              ptr.Of(false),
+					Token:               "",
+					AllowedRanges:       nil,
+					AllowedRangesParsed: nil,
+				},
 			},
 		},
 		{
@@ -238,10 +254,10 @@ func TestLoadAPIServer(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.input.LoadAPIServer(false)
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
+
 			if tc.expectedErr != "" {
 				return
 			}
@@ -301,10 +317,10 @@ func TestParseCapiWhitelists(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			wl, err := parseCapiWhitelists(strings.NewReader(tc.input))
 			cstest.RequireErrorContains(t, err, tc.expectedErr)
+
 			if tc.expectedErr != "" {
 				return
 			}

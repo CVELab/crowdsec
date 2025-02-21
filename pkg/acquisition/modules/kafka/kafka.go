@@ -23,9 +23,7 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/types"
 )
 
-var (
-	dataSourceName = "kafka"
-)
+const dataSourceName = "kafka"
 
 var linesRead = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
@@ -52,9 +50,10 @@ type TLSConfig struct {
 }
 
 type KafkaSource struct {
-	Config KafkaConfiguration
-	logger *log.Entry
-	Reader *kafka.Reader
+	metricsLevel int
+	Config       KafkaConfiguration
+	logger       *log.Entry
+	Reader       *kafka.Reader
 }
 
 func (k *KafkaSource) GetUuid() string {
@@ -81,13 +80,14 @@ func (k *KafkaSource) UnmarshalConfig(yamlConfig []byte) error {
 		k.Config.Mode = configuration.TAIL_MODE
 	}
 
-	k.logger.Debugf("successfully unmarshaled kafka configuration : %+v", k.Config)
+	k.logger.Debugf("successfully parsed kafka configuration : %+v", k.Config)
 
 	return err
 }
 
-func (k *KafkaSource) Configure(yamlConfig []byte, logger *log.Entry) error {
+func (k *KafkaSource) Configure(yamlConfig []byte, logger *log.Entry, metricsLevel int) error {
 	k.logger = logger
+	k.metricsLevel = metricsLevel
 
 	k.logger.Debugf("start configuring %s source", dataSourceName)
 
@@ -127,7 +127,7 @@ func (k *KafkaSource) GetName() string {
 	return dataSourceName
 }
 
-func (k *KafkaSource) OneShotAcquisition(out chan types.Event, t *tomb.Tomb) error {
+func (k *KafkaSource) OneShotAcquisition(_ context.Context, _ chan types.Event, _ *tomb.Tomb) error {
 	return fmt.Errorf("%s datasource does not support one-shot acquisition", dataSourceName)
 }
 
@@ -147,19 +147,24 @@ func (k *KafkaSource) Dump() interface{} {
 	return k
 }
 
-func (k *KafkaSource) ReadMessage(out chan types.Event) error {
+func (k *KafkaSource) ReadMessage(ctx context.Context, out chan types.Event) error {
 	// Start processing from latest Offset
-	k.Reader.SetOffsetAt(context.Background(), time.Now())
+	k.Reader.SetOffsetAt(ctx, time.Now())
+
 	for {
 		k.logger.Tracef("reading message from topic '%s'", k.Config.Topic)
-		m, err := k.Reader.ReadMessage(context.Background())
+
+		m, err := k.Reader.ReadMessage(ctx)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
+
 			k.logger.Errorln(fmt.Errorf("while reading %s message: %w", dataSourceName, err))
+
 			continue
 		}
+
 		k.logger.Tracef("got message: %s", string(m.Value))
 		l := types.Line{
 			Raw:     string(m.Value),
@@ -170,22 +175,21 @@ func (k *KafkaSource) ReadMessage(out chan types.Event) error {
 			Module:  k.GetName(),
 		}
 		k.logger.Tracef("line with message read from topic '%s': %+v", k.Config.Topic, l)
-		linesRead.With(prometheus.Labels{"topic": k.Config.Topic}).Inc()
-		var evt types.Event
 
-		if !k.Config.UseTimeMachine {
-			evt = types.Event{Line: l, Process: true, Type: types.LOG, ExpectMode: types.LIVE}
-		} else {
-			evt = types.Event{Line: l, Process: true, Type: types.LOG, ExpectMode: types.TIMEMACHINE}
+		if k.metricsLevel != configuration.METRICS_NONE {
+			linesRead.With(prometheus.Labels{"topic": k.Config.Topic}).Inc()
 		}
+
+		evt := types.MakeEvent(k.Config.UseTimeMachine, types.LOG, true)
+		evt.Line = l
 		out <- evt
 	}
 }
 
-func (k *KafkaSource) RunReader(out chan types.Event, t *tomb.Tomb) error {
+func (k *KafkaSource) RunReader(ctx context.Context, out chan types.Event, t *tomb.Tomb) error {
 	k.logger.Debugf("starting %s datasource reader goroutine with configuration %+v", dataSourceName, k.Config)
 	t.Go(func() error {
-		return k.ReadMessage(out)
+		return k.ReadMessage(ctx, out)
 	})
 	//nolint //fp
 	for {
@@ -200,12 +204,12 @@ func (k *KafkaSource) RunReader(out chan types.Event, t *tomb.Tomb) error {
 	}
 }
 
-func (k *KafkaSource) StreamingAcquisition(out chan types.Event, t *tomb.Tomb) error {
+func (k *KafkaSource) StreamingAcquisition(ctx context.Context, out chan types.Event, t *tomb.Tomb) error {
 	k.logger.Infof("start reader on brokers '%+v' with topic '%s'", k.Config.Brokers, k.Config.Topic)
 
 	t.Go(func() error {
 		defer trace.CatchPanic("crowdsec/acquis/kafka/live")
-		return k.RunReader(out, t)
+		return k.RunReader(ctx, out, t)
 	})
 
 	return nil
@@ -220,19 +224,23 @@ func (kc *KafkaConfiguration) NewTLSConfig() (*tls.Config, error) {
 	if err != nil {
 		return &tlsConfig, err
 	}
+
 	tlsConfig.Certificates = []tls.Certificate{cert}
 
 	caCert, err := os.ReadFile(kc.TLS.CaCert)
 	if err != nil {
 		return &tlsConfig, err
 	}
+
 	caCertPool, err := x509.SystemCertPool()
 	if err != nil {
 		return &tlsConfig, fmt.Errorf("unable to load system CA certificates: %w", err)
 	}
+
 	if caCertPool == nil {
 		caCertPool = x509.NewCertPool()
 	}
+
 	caCertPool.AppendCertsFromPEM(caCert)
 	tlsConfig.RootCAs = caCertPool
 
@@ -273,9 +281,11 @@ func (kc *KafkaConfiguration) NewReader(dialer *kafka.Dialer, logger *log.Entry)
 		Logger:      kafka.LoggerFunc(logger.Debugf),
 		ErrorLogger: kafka.LoggerFunc(logger.Errorf),
 	}
+
 	if kc.GroupID != "" && kc.Partition != 0 {
-		return &kafka.Reader{}, fmt.Errorf("cannot specify both group_id and partition")
+		return &kafka.Reader{}, errors.New("cannot specify both group_id and partition")
 	}
+
 	if kc.GroupID != "" {
 		rConf.GroupID = kc.GroupID
 	} else if kc.Partition != 0 {
@@ -283,8 +293,10 @@ func (kc *KafkaConfiguration) NewReader(dialer *kafka.Dialer, logger *log.Entry)
 	} else {
 		logger.Warnf("no group_id specified, crowdsec will only read from the 1st partition of the topic")
 	}
+
 	if err := rConf.Validate(); err != nil {
 		return &kafka.Reader{}, fmt.Errorf("while validating reader configuration: %w", err)
 	}
+
 	return kafka.NewReader(rConf), nil
 }

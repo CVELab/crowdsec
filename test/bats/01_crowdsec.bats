@@ -1,5 +1,4 @@
 #!/usr/bin/env bats
-# vim: ft=bats:list:ts=8:sts=4:sw=4:et:ai:si:
 
 set -u
 
@@ -24,8 +23,8 @@ teardown() {
 #----------
 
 @test "crowdsec (usage)" {
-    rune -0 wait-for --out "Usage of " "${CROWDSEC}" -h
-    rune -0 wait-for --out "Usage of " "${CROWDSEC}" --help
+    rune -0 wait-for --out "Usage of " "$CROWDSEC" -h
+    rune -0 wait-for --out "Usage of " "$CROWDSEC" --help
 }
 
 @test "crowdsec (unknown flag)" {
@@ -33,19 +32,24 @@ teardown() {
 }
 
 @test "crowdsec (unknown argument)" {
-    rune -0 wait-for --err "argument provided but not defined: trololo" "${CROWDSEC}" trololo
+    rune -0 wait-for --err "argument provided but not defined: trololo" "$CROWDSEC" trololo
+}
+
+@test "crowdsec -version" {
+    rune -0 "$CROWDSEC" -version
+    assert_output --partial "version:"
 }
 
 @test "crowdsec (no api and no agent)" {
     rune -0 wait-for \
-        --err "You must run at least the API Server or crowdsec" \
-        "${CROWDSEC}" -no-api -no-cs
+        --err "you must run at least the API Server or crowdsec" \
+        "$CROWDSEC" -no-api -no-cs
 }
 
 @test "crowdsec - print error on exit" {
     # errors that cause program termination are printed to stderr, not only logs
     config_set '.db_config.type="meh"'
-    rune -1 "${CROWDSEC}"
+    rune -1 "$CROWDSEC"
     assert_stderr --partial "unable to create database client: unknown database type 'meh'"
 }
 
@@ -53,32 +57,69 @@ teardown() {
     config_set '.common={}'
     rune -0 wait-for \
         --err "Starting processing data" \
-        "${CROWDSEC}"
+        "$CROWDSEC"
     refute_output
 
     config_set 'del(.common)'
     rune -0 wait-for \
         --err "Starting processing data" \
-        "${CROWDSEC}"
+        "$CROWDSEC"
     refute_output
 }
 
+@test "crowdsec - log format" {
+    # fail early
+    config_disable_lapi
+    config_disable_agent
+
+    config_set '.common.log_media="stdout"'
+
+    config_set '.common.log_format=""'
+    rune -0 wait-for --err "you must run at least the API Server or crowdsec" "$CROWDSEC"
+    assert_stderr --partial 'level=fatal msg="you must run at least the API Server or crowdsec"'
+
+    config_set '.common.log_format="text"'
+    rune -0 wait-for --err "you must run at least the API Server or crowdsec" "$CROWDSEC"
+    assert_stderr --partial 'level=fatal msg="you must run at least the API Server or crowdsec"'
+
+    config_set '.common.log_format="json"'
+    rune -0 wait-for --err "you must run at least the API Server or crowdsec" "$CROWDSEC"
+    rune -0 jq -c 'select(.msg=="you must run at least the API Server or crowdsec") | .level' <(stderr | grep "^{")
+    assert_output '"fatal"'
+
+    # If log_media='file', a hook to stderr is added only for fatal messages,
+    # with a predefined formatter (level + msg, no timestamp, ignore log_format)
+
+    config_set '.common.log_media="file"'
+
+    config_set '.common.log_format="text"'
+    rune -0 wait-for --err "you must run at least the API Server or crowdsec" "$CROWDSEC"
+    assert_stderr --regexp 'FATAL.* you must run at least the API Server or crowdsec$'
+
+    config_set '.common.log_format="json"'
+    rune -0 wait-for --err "you must run at least the API Server or crowdsec" "$CROWDSEC"
+    assert_stderr --regexp 'FATAL.* you must run at least the API Server or crowdsec$'
+}
+
 @test "CS_LAPI_SECRET not strong enough" {
-    CS_LAPI_SECRET=foo rune -1 wait-for "${CROWDSEC}"
+    CS_LAPI_SECRET=foo rune -1 wait-for "$CROWDSEC"
     assert_stderr --partial "api server init: unable to run local API: controller init: CS_LAPI_SECRET not strong enough"
 }
 
 @test "crowdsec - reload (change of logfile, disabled agent)" {
-    logdir1=$(TMPDIR="${BATS_TEST_TMPDIR}" mktemp -u)
+    logdir1=$(TMPDIR="$BATS_TEST_TMPDIR" mktemp -u)
     log_old="${logdir1}/crowdsec.log"
     config_set ".common.log_dir=\"${logdir1}\""
 
     rune -0 ./instance-crowdsec start-pid
     PID="$output"
+
+    sleep .5
+
     assert_file_exists "$log_old"
     assert_file_contains "$log_old" "Starting processing data"
 
-    logdir2=$(TMPDIR="${BATS_TEST_TMPDIR}" mktemp -u)
+    logdir2=$(TMPDIR="$BATS_TEST_TMPDIR" mktemp -u)
     log_new="${logdir2}/crowdsec.log"
     config_set ".common.log_dir=\"${logdir2}\""
 
@@ -130,11 +171,13 @@ teardown() {
     rune -0 ./instance-crowdsec stop
 }
 
+# TODO: move acquisition tests to test/bats/crowdsec-acquisition.bats
+
 @test "crowdsec (error if the acquisition_path file is defined but missing)" {
     ACQUIS_YAML=$(config_get '.crowdsec_service.acquisition_path')
     rm -f "$ACQUIS_YAML"
 
-    rune -1 wait-for "${CROWDSEC}"
+    rune -1 wait-for "$CROWDSEC"
     assert_stderr --partial "acquis.yaml: no such file or directory"
 }
 
@@ -144,10 +187,10 @@ teardown() {
     config_set '.crowdsec_service.acquisition_path=""'
 
     ACQUIS_DIR=$(config_get '.crowdsec_service.acquisition_dir')
-    rm -f "$ACQUIS_DIR"
+    rm -rf "$ACQUIS_DIR"
 
     config_set '.common.log_media="stdout"'
-    rune -1 wait-for "${CROWDSEC}"
+    rune -1 wait-for "$CROWDSEC"
     # check warning
     assert_stderr --partial "no acquisition file found"
     assert_stderr --partial "crowdsec init: while loading acquisition config: no datasource enabled"
@@ -159,11 +202,11 @@ teardown() {
     config_set '.crowdsec_service.acquisition_path=""'
 
     ACQUIS_DIR=$(config_get '.crowdsec_service.acquisition_dir')
-    rm -f "$ACQUIS_DIR"
+    rm -rf "$ACQUIS_DIR"
     config_set '.crowdsec_service.acquisition_dir=""'
 
     config_set '.common.log_media="stdout"'
-    rune -1 wait-for "${CROWDSEC}"
+    rune -1 wait-for "$CROWDSEC"
     # check warning
     assert_stderr --partial "no acquisition_path or acquisition_dir specified"
     assert_stderr --partial "crowdsec init: while loading acquisition config: no datasource enabled"
@@ -181,17 +224,52 @@ teardown() {
 
     rune -0 wait-for \
         --err "Starting processing data" \
-        "${CROWDSEC}"
+        "$CROWDSEC"
 
     # now, if foo.yaml is empty instead, there won't be valid datasources.
 
     cat /dev/null >"$ACQUIS_DIR"/foo.yaml
 
-    rune -1 wait-for "${CROWDSEC}"
+    rune -1 wait-for "$CROWDSEC"
     assert_stderr --partial "crowdsec init: while loading acquisition config: no datasource enabled"
 }
 
-@test "crowdsec (disabled datasources)" {
+@test "crowdsec (datasource not built)" {
+    config_set '.common.log_media="stdout"'
+
+    # a datasource cannot run - it's not built in the log processor executable
+
+    ACQUIS_DIR=$(config_get '.crowdsec_service.acquisition_dir')
+    mkdir -p "$ACQUIS_DIR"
+    cat >"$ACQUIS_DIR"/foo.yaml <<-EOT
+	source: journalctl
+	journalctl_filter:
+	 - "_SYSTEMD_UNIT=ssh.service"
+	labels:
+	  type: syslog
+	EOT
+
+    #shellcheck disable=SC2016
+    rune -1 wait-for \
+        --err "crowdsec init: while loading acquisition config: in file $ACQUIS_DIR/foo.yaml (position: 0) - data source journalctl is not built in this version of crowdsec" \
+        env PATH='' "$CROWDSEC".min
+
+    # auto-detection of journalctl_filter still works
+    cat >"$ACQUIS_DIR"/foo.yaml <<-EOT
+        source: whatever
+	journalctl_filter:
+	 - "_SYSTEMD_UNIT=ssh.service"
+	labels:
+	  type: syslog
+	EOT
+
+    #shellcheck disable=SC2016
+    rune -1 wait-for \
+        --err "crowdsec init: while loading acquisition config: in file $ACQUIS_DIR/foo.yaml (position: 0) - data source journalctl is not built in this version of crowdsec" \
+        env PATH='' "$CROWDSEC".min
+}
+
+@test "crowdsec (disabled datasource)" {
     if is_package_testing; then
         # we can't hide journalctl in package testing
         # because crowdsec is run from systemd
@@ -214,8 +292,8 @@ teardown() {
 
     #shellcheck disable=SC2016
     rune -0 wait-for \
-        --err 'datasource '\''journalctl'\'' is not available: exec: "journalctl": executable file not found in ' \
-        env PATH='' "${CROWDSEC}"
+        --err 'datasource '\''journalctl'\'' is not available: exec: \\"journalctl\\": executable file not found in ' \
+        env PATH='' "$CROWDSEC"
 
     # if all datasources are disabled, crowdsec should exit
 
@@ -223,7 +301,7 @@ teardown() {
     rm -f "$ACQUIS_YAML"
     config_set '.crowdsec_service.acquisition_path=""'
 
-    rune -1 wait-for env PATH='' "${CROWDSEC}"
+    rune -1 wait-for env PATH='' "$CROWDSEC"
     assert_stderr --partial "crowdsec init: while loading acquisition config: no datasource enabled"
 }
 
@@ -234,11 +312,11 @@ teardown() {
 
     # if filenames are missing, it won't be able to detect source type
     config_set "$ACQUIS_YAML" '.source="file"'
-    rune -1 wait-for "${CROWDSEC}"
-    assert_stderr --partial "failed to configure datasource file: no filename or filenames configuration provided"
+    rune -1 wait-for "$CROWDSEC"
+    assert_stderr --partial "while configuring datasource of type file from $ACQUIS_YAML (position 0): no filename or filenames configuration provided"
 
     config_set "$ACQUIS_YAML" '.filenames=["file.log"]'
     config_set "$ACQUIS_YAML" '.meh=3'
-    rune -1 wait-for "${CROWDSEC}"
+    rune -1 wait-for "$CROWDSEC"
     assert_stderr --partial "field meh not found in type fileacquisition.FileConfiguration"
 }

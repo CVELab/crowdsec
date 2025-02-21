@@ -14,8 +14,8 @@ type HubTest struct {
 	CrowdSecPath              string
 	CscliPath                 string
 	HubPath                   string
-	HubTestPath               string //generic parser/scenario tests .tests
-	HubAppsecTestPath         string //dir specific to appsec tests .appsec-tests
+	HubTestPath               string // generic parser/scenario tests .tests
+	HubAppsecTestPath         string // dir specific to appsec tests .appsec-tests
 	HubIndexFile              string
 	TemplateConfigPath        string
 	TemplateProfilePath       string
@@ -25,8 +25,8 @@ type HubTest struct {
 	NucleiTargetHost          string
 	AppSecHost                string
 
-	HubIndex *cwhub.Hub
-	Tests    []*HubTestItem
+	HubIndex   *cwhub.Hub
+	Tests      []*HubTestItem
 }
 
 const (
@@ -83,7 +83,7 @@ func NewHubTest(hubPath string, crowdsecPath string, cscliPath string, isAppsecT
 	}
 
 	if isAppsecTest {
-		HubTestPath := filepath.Join(hubPath, "./.appsec-tests/")
+		HubTestPath := filepath.Join(hubPath, ".appsec-tests")
 		hubIndexFile := filepath.Join(hubPath, ".index.json")
 
 		local := &csconfig.LocalHubCfg{
@@ -93,9 +93,13 @@ func NewHubTest(hubPath string, crowdsecPath string, cscliPath string, isAppsecT
 			InstallDataDir: HubTestPath,
 		}
 
-		hub, err := cwhub.NewHub(local, nil, false, nil)
+		hub, err := cwhub.NewHub(local, nil)
 		if err != nil {
-			return HubTest{}, fmt.Errorf("unable to load hub: %s", err)
+			return HubTest{}, err
+		}
+
+		if err := hub.Load(); err != nil {
+			return HubTest{}, err
 		}
 
 		return HubTest{
@@ -115,7 +119,7 @@ func NewHubTest(hubPath string, crowdsecPath string, cscliPath string, isAppsecT
 		}, nil
 	}
 
-	HubTestPath := filepath.Join(hubPath, "./.tests/")
+	HubTestPath := filepath.Join(hubPath, ".tests")
 
 	hubIndexFile := filepath.Join(hubPath, ".index.json")
 
@@ -126,9 +130,13 @@ func NewHubTest(hubPath string, crowdsecPath string, cscliPath string, isAppsecT
 		InstallDataDir: HubTestPath,
 	}
 
-	hub, err := cwhub.NewHub(local, nil, false, nil)
+	hub, err := cwhub.NewHub(local, nil)
 	if err != nil {
-		return HubTest{}, fmt.Errorf("unable to load hub: %s", err)
+		return HubTest{}, err
+	}
+
+	if err := hub.Load(); err != nil {
+		return HubTest{}, err
 	}
 
 	return HubTest{

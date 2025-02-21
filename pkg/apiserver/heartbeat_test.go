@@ -8,11 +8,12 @@ import (
 )
 
 func TestHeartBeat(t *testing.T) {
-	lapi := SetupLAPITest(t)
+	ctx := t.Context()
+	lapi := SetupLAPITest(t, ctx)
 
-	w := lapi.RecordResponse(t, http.MethodGet, "/v1/heartbeat", emptyBody, "password")
+	w := lapi.RecordResponse(t, ctx, http.MethodGet, "/v1/heartbeat", emptyBody, "password")
 	assert.Equal(t, 200, w.Code)
 
-	w = lapi.RecordResponse(t, "POST", "/v1/heartbeat", emptyBody, "password")
+	w = lapi.RecordResponse(t, ctx, http.MethodPost, "/v1/heartbeat", emptyBody, "password")
 	assert.Equal(t, 405, w.Code)
 }

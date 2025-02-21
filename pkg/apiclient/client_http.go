@@ -15,7 +15,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (c *ApiClient) NewRequest(method, url string, body interface{}) (*http.Request, error) {
+func (c *ApiClient) NewRequestWithContext(ctx context.Context, method, url string, body interface{}) (*http.Request, error) {
 	if !strings.HasSuffix(c.BaseURL.Path, "/") {
 		return nil, fmt.Errorf("BaseURL must have a trailing slash, but %q does not", c.BaseURL)
 	}
@@ -36,7 +36,7 @@ func (c *ApiClient) NewRequest(method, url string, body interface{}) (*http.Requ
 		}
 	}
 
-	req, err := http.NewRequest(method, u.String(), buf)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), buf)
 	if err != nil {
 		return nil, err
 	}
@@ -61,9 +61,7 @@ func (c *ApiClient) Do(ctx context.Context, req *http.Request, v interface{}) (*
 		req.Header.Add("User-Agent", c.UserAgent)
 	}
 
-	if log.GetLevel() >= log.DebugLevel {
-		log.Debugf("[URL] %s %s", req.Method, req.URL)
-	}
+	log.Debugf("[URL] %s %s", req.Method, req.URL)
 
 	resp, err := c.client.Do(req)
 	if resp != nil && resp.Body != nil {
@@ -80,10 +78,11 @@ func (c *ApiClient) Do(ctx context.Context, req *http.Request, v interface{}) (*
 		}
 
 		// If the error type is *url.Error, sanitize its URL before returning.
-		if e, ok := err.(*url.Error); ok {
-			if url, err := url.Parse(e.URL); err == nil {
-				e.URL = url.String()
-				return newResponse(resp), e
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			if parsedURL, parseErr := url.Parse(urlErr.URL); parseErr == nil {
+				urlErr.URL = parsedURL.String()
+				return newResponse(resp), urlErr
 			}
 
 			return newResponse(resp), err

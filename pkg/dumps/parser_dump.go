@@ -1,6 +1,7 @@
 package dumps
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -8,13 +9,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crowdsecurity/crowdsec/pkg/types"
-	"github.com/crowdsecurity/go-cs-lib/maptools"
-	"github.com/enescakir/emoji"
 	"github.com/fatih/color"
 	diff "github.com/r3labs/diff/v2"
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
+
+	"github.com/crowdsecurity/go-cs-lib/maptools"
+
+	"github.com/crowdsecurity/crowdsec/pkg/emoji"
+	"github.com/crowdsecurity/crowdsec/pkg/types"
 )
 
 type ParserResult struct {
@@ -56,7 +59,7 @@ func LoadParserDump(filepath string) (*ParserResults, error) {
 
 	var lastStage string
 
-	//Loop over stages to find last successful one with at least one parser
+	// Loop over stages to find last successful one with at least one parser
 	for i := len(stages) - 2; i >= 0; i-- {
 		if len(pdump[stages[i]]) != 0 {
 			lastStage = stages[i]
@@ -73,7 +76,7 @@ func LoadParserDump(filepath string) (*ParserResults, error) {
 	sort.Strings(parsers)
 
 	if len(parsers) == 0 {
-		return nil, fmt.Errorf("no parser found. Please install the appropriate parser and retry")
+		return nil, errors.New("no parser found. Please install the appropriate parser and retry")
 	}
 
 	lastParser := parsers[len(parsers)-1]
@@ -89,80 +92,103 @@ func LoadParserDump(filepath string) (*ParserResults, error) {
 	return &pdump, nil
 }
 
-func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpOpts) {
-	//note : we can use line -> time as the unique identifier (of acquisition)
-	state := make(map[time.Time]map[string]map[string]ParserResult)
-	assoc := make(map[time.Time]string, 0)
-	parser_order := make(map[string][]string)
+type tree struct {
+	// note : we can use line -> time as the unique identifier (of acquisition)
+	state       map[time.Time]map[string]map[string]ParserResult
+	assoc       map[time.Time]string
+	parserOrder map[string][]string
+}
 
+func newTree() *tree {
+	return &tree{
+		state:       make(map[time.Time]map[string]map[string]ParserResult),
+		assoc:       make(map[time.Time]string),
+		parserOrder: make(map[string][]string),
+	}
+}
+
+func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpOpts) {
+	t := newTree()
+	t.processEvents(parserResults)
+	t.processBuckets(bucketPour)
+	t.displayResults(opts)
+}
+
+func (t *tree) processEvents(parserResults ParserResults) {
 	for stage, parsers := range parserResults {
-		//let's process parsers in the order according to idx
-		parser_order[stage] = make([]string, len(parsers))
+		// let's process parsers in the order according to idx
+		t.parserOrder[stage] = make([]string, len(parsers))
+
 		for pname, parser := range parsers {
 			if len(parser) > 0 {
-				parser_order[stage][parser[0].Idx-1] = pname
+				t.parserOrder[stage][parser[0].Idx-1] = pname
 			}
 		}
 
-		for _, parser := range parser_order[stage] {
+		for _, parser := range t.parserOrder[stage] {
 			results := parsers[parser]
 			for _, parserRes := range results {
 				evt := parserRes.Evt
-				if _, ok := state[evt.Line.Time]; !ok {
-					state[evt.Line.Time] = make(map[string]map[string]ParserResult)
-					assoc[evt.Line.Time] = evt.Line.Raw
+				if _, ok := t.state[evt.Line.Time]; !ok {
+					t.state[evt.Line.Time] = make(map[string]map[string]ParserResult)
+					t.assoc[evt.Line.Time] = evt.Line.Raw
 				}
 
-				if _, ok := state[evt.Line.Time][stage]; !ok {
-					state[evt.Line.Time][stage] = make(map[string]ParserResult)
+				if _, ok := t.state[evt.Line.Time][stage]; !ok {
+					t.state[evt.Line.Time][stage] = make(map[string]ParserResult)
 				}
 
-				state[evt.Line.Time][stage][parser] = ParserResult{Evt: evt, Success: parserRes.Success}
+				t.state[evt.Line.Time][stage][parser] = ParserResult{Evt: evt, Success: parserRes.Success}
 			}
 		}
 	}
+}
 
-	for bname, evtlist := range bucketPour {
-		for _, evt := range evtlist {
-			if evt.Line.Raw == "" {
+func (t *tree) processBuckets(bucketPour BucketPourInfo) {
+	for bname, events := range bucketPour {
+		for i := range events {
+			if events[i].Line.Raw == "" {
 				continue
 			}
 
-			//it might be bucket overflow being reprocessed, skip this
-			if _, ok := state[evt.Line.Time]; !ok {
-				state[evt.Line.Time] = make(map[string]map[string]ParserResult)
-				assoc[evt.Line.Time] = evt.Line.Raw
+			// it might be bucket overflow being reprocessed, skip this
+			if _, ok := t.state[events[i].Line.Time]; !ok {
+				t.state[events[i].Line.Time] = make(map[string]map[string]ParserResult)
+				t.assoc[events[i].Line.Time] = events[i].Line.Raw
 			}
 
-			//there is a trick : to know if an event successfully exit the parsers, we check if it reached the pour() phase
-			//we thus use a fake stage "buckets" and a fake parser "OK" to know if it entered
-			if _, ok := state[evt.Line.Time]["buckets"]; !ok {
-				state[evt.Line.Time]["buckets"] = make(map[string]ParserResult)
+			// there is a trick: to know if an event successfully exit the parsers, we check if it reached the pour() phase
+			// we thus use a fake stage "buckets" and a fake parser "OK" to know if it entered
+			if _, ok := t.state[events[i].Line.Time]["buckets"]; !ok {
+				t.state[events[i].Line.Time]["buckets"] = make(map[string]ParserResult)
 			}
 
-			state[evt.Line.Time]["buckets"][bname] = ParserResult{Success: true}
+			t.state[events[i].Line.Time]["buckets"][bname] = ParserResult{Success: true}
 		}
 	}
+}
 
+func (t *tree) displayResults(opts DumpOpts) {
 	yellow := color.New(color.FgYellow).SprintFunc()
 	red := color.New(color.FgRed).SprintFunc()
 	green := color.New(color.FgGreen).SprintFunc()
 	whitelistReason := ""
-	//get each line
-	for tstamp, rawstr := range assoc {
+
+	// get each line
+	for tstamp, rawstr := range t.assoc {
 		if opts.SkipOk {
-			if _, ok := state[tstamp]["buckets"]["OK"]; ok {
+			if _, ok := t.state[tstamp]["buckets"]["OK"]; ok {
 				continue
 			}
 		}
 
 		fmt.Printf("line: %s\n", rawstr)
 
-		skeys := make([]string, 0, len(state[tstamp]))
+		skeys := make([]string, 0, len(t.state[tstamp]))
 
-		for k := range state[tstamp] {
-			//there is a trick : to know if an event successfully exit the parsers, we check if it reached the pour() phase
-			//we thus use a fake stage "buckets" and a fake parser "OK" to know if it entered
+		for k := range t.state[tstamp] {
+			// there is a trick : to know if an event successfully exit the parsers, we check if it reached the pour() phase
+			// we thus use a fake stage "buckets" and a fake parser "OK" to know if it entered
 			if k == "buckets" {
 				continue
 			}
@@ -176,18 +202,18 @@ func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpO
 		var prevItem types.Event
 
 		for _, stage := range skeys {
-			parsers := state[tstamp][stage]
+			parsers := t.state[tstamp][stage]
 
 			sep := "├"
 			presep := "|"
 
 			fmt.Printf("\t%s %s\n", sep, stage)
 
-			for idx, parser := range parser_order[stage] {
+			for idx, parser := range t.parserOrder[stage] {
 				res := parsers[parser].Success
 				sep := "├"
 
-				if idx == len(parser_order[stage])-1 {
+				if idx == len(t.parserOrder[stage])-1 {
 					sep = "└"
 				}
 
@@ -209,13 +235,14 @@ func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpO
 						case "update":
 							detailsDisplay += fmt.Sprintf("\t%s\t\t%s %s evt.%s : %s -> %s\n", presep, sep, change.Type, strings.Join(change.Path, "."), change.From, yellow(change.To))
 
-							if change.Path[0] == "Whitelisted" && change.To == true {
+							if change.Path[0] == "Whitelisted" && change.To == true { //nolint:revive
 								whitelisted = true
 
 								if whitelistReason == "" {
 									whitelistReason = parsers[parser].Evt.WhitelistReason
 								}
 							}
+
 							updated++
 						case "delete":
 							deleted++
@@ -232,7 +259,7 @@ func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpO
 				}
 
 				if updated > 0 {
-					if len(changeStr) > 0 {
+					if changeStr != "" {
 						changeStr += " "
 					}
 
@@ -240,7 +267,7 @@ func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpO
 				}
 
 				if deleted > 0 {
-					if len(changeStr) > 0 {
+					if changeStr != "" {
 						changeStr += " "
 					}
 
@@ -248,7 +275,7 @@ func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpO
 				}
 
 				if whitelisted {
-					if len(changeStr) > 0 {
+					if changeStr != "" {
 						changeStr += " "
 					}
 
@@ -273,12 +300,12 @@ func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpO
 
 		sep := "└"
 
-		if len(state[tstamp]["buckets"]) > 0 {
+		if len(t.state[tstamp]["buckets"]) > 0 {
 			sep = "├"
 		}
 
-		//did the event enter the bucket pour phase ?
-		if _, ok := state[tstamp]["buckets"]["OK"]; ok {
+		// did the event enter the bucket pour phase ?
+		if _, ok := t.state[tstamp]["buckets"]["OK"]; ok {
 			fmt.Printf("\t%s-------- parser success %s\n", sep, emoji.GreenCircle)
 		} else if whitelistReason != "" {
 			fmt.Printf("\t%s-------- parser success, ignored by whitelist (%s) %s\n", sep, whitelistReason, emoji.GreenCircle)
@@ -286,16 +313,16 @@ func DumpTree(parserResults ParserResults, bucketPour BucketPourInfo, opts DumpO
 			fmt.Printf("\t%s-------- parser failure %s\n", sep, emoji.RedCircle)
 		}
 
-		//now print bucket info
-		if len(state[tstamp]["buckets"]) > 0 {
+		// now print bucket info
+		if len(t.state[tstamp]["buckets"]) > 0 {
 			fmt.Printf("\t├ Scenarios\n")
 		}
 
-		bnames := make([]string, 0, len(state[tstamp]["buckets"]))
+		bnames := make([]string, 0, len(t.state[tstamp]["buckets"]))
 
-		for k := range state[tstamp]["buckets"] {
-			//there is a trick : to know if an event successfully exit the parsers, we check if it reached the pour() phase
-			//we thus use a fake stage "buckets" and a fake parser "OK" to know if it entered
+		for k := range t.state[tstamp]["buckets"] {
+			// there is a trick : to know if an event successfully exit the parsers, we check if it reached the pour() phase
+			// we thus use a fake stage "buckets" and a fake parser "OK" to know if it entered
 			if k == "OK" {
 				continue
 			}

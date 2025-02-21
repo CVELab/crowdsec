@@ -4,47 +4,72 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
-	"github.com/crowdsecurity/coraza/v3"
-	corazatypes "github.com/crowdsecurity/coraza/v3/types"
-	"github.com/crowdsecurity/crowdsec/pkg/appsec"
-	"github.com/crowdsecurity/crowdsec/pkg/types"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/tomb.v2"
 
+	"github.com/crowdsecurity/coraza/v3"
+	corazatypes "github.com/crowdsecurity/coraza/v3/types"
+
+	// load body processors via init()
 	_ "github.com/crowdsecurity/crowdsec/pkg/acquisition/modules/appsec/bodyprocessors"
+	"github.com/crowdsecurity/crowdsec/pkg/appsec"
+	"github.com/crowdsecurity/crowdsec/pkg/appsec/allowlists"
+	"github.com/crowdsecurity/crowdsec/pkg/types"
 )
 
 // that's the runtime structure of the Application security engine as seen from the acquis
 type AppsecRunner struct {
-	outChan             chan types.Event
-	inChan              chan appsec.ParsedRequest
-	UUID                string
-	AppsecRuntime       *appsec.AppsecRuntimeConfig //this holds the actual appsec runtime config, rules, remediations, hooks etc.
-	AppsecInbandEngine  coraza.WAF
-	AppsecOutbandEngine coraza.WAF
-	Labels              map[string]string
-	logger              *log.Entry
+	outChan                chan types.Event
+	inChan                 chan appsec.ParsedRequest
+	UUID                   string
+	AppsecRuntime          *appsec.AppsecRuntimeConfig //this holds the actual appsec runtime config, rules, remediations, hooks etc.
+	AppsecInbandEngine     coraza.WAF
+	AppsecOutbandEngine    coraza.WAF
+	Labels                 map[string]string
+	logger                 *log.Entry
+	appsecAllowlistsClient *allowlists.AppsecAllowlist
+}
+
+func (r *AppsecRunner) MergeDedupRules(collections []appsec.AppsecCollection, logger *log.Entry) string {
+	var rulesArr []string
+	dedupRules := make(map[string]struct{})
+	discarded := 0
+
+	for _, collection := range collections {
+		// Dedup *our* rules
+		for _, rule := range collection.Rules {
+			if _, ok := dedupRules[rule]; ok {
+				discarded++
+				logger.Debugf("Discarding duplicate rule : %s", rule)
+				continue
+			}
+			rulesArr = append(rulesArr, rule)
+			dedupRules[rule] = struct{}{}
+		}
+		// Don't mess up with native modsec rules
+		rulesArr = append(rulesArr, collection.NativeRules...)
+	}
+	if discarded > 0 {
+		logger.Warningf("%d rules were discarded as they were duplicates", discarded)
+	}
+
+	return strings.Join(rulesArr, "\n")
 }
 
 func (r *AppsecRunner) Init(datadir string) error {
 	var err error
 	fs := os.DirFS(datadir)
 
-	inBandRules := ""
-	outOfBandRules := ""
-
-	for _, collection := range r.AppsecRuntime.InBandRules {
-		inBandRules += collection.String()
-	}
-
-	for _, collection := range r.AppsecRuntime.OutOfBandRules {
-		outOfBandRules += collection.String()
-	}
 	inBandLogger := r.logger.Dup().WithField("band", "inband")
 	outBandLogger := r.logger.Dup().WithField("band", "outband")
+
+	//While loading rules, we dedup rules based on their content, while keeping the order
+	inBandRules := r.MergeDedupRules(r.AppsecRuntime.InBandRules, inBandLogger)
+	outOfBandRules := r.MergeDedupRules(r.AppsecRuntime.OutOfBandRules, outBandLogger)
 
 	//setting up inband engine
 	inbandCfg := coraza.NewWAFConfig().WithDirectives(inBandRules).WithRootFS(fs).WithDebugLogger(appsec.NewCrzLogger(inBandLogger))
@@ -72,6 +97,9 @@ func (r *AppsecRunner) Init(datadir string) error {
 		outbandCfg = outbandCfg.WithRequestBodyInMemoryLimit(*r.AppsecRuntime.Config.OutOfBandOptions.RequestBodyInMemoryLimit)
 	}
 	r.AppsecOutbandEngine, err = coraza.NewWAF(outbandCfg)
+	if err != nil {
+		return fmt.Errorf("unable to initialize outband engine : %w", err)
+	}
 
 	if r.AppsecRuntime.DisabledInBandRulesTags != nil {
 		for _, tag := range r.AppsecRuntime.DisabledInBandRulesTags {
@@ -99,10 +127,6 @@ func (r *AppsecRunner) Init(datadir string) error {
 
 	r.logger.Tracef("Loaded inband rules: %+v", r.AppsecInbandEngine.GetRuleGroup().GetRules())
 	r.logger.Tracef("Loaded outband rules: %+v", r.AppsecOutbandEngine.GetRuleGroup().GetRules())
-
-	if err != nil {
-		return fmt.Errorf("unable to initialize outband engine : %w", err)
-	}
 
 	return nil
 }
@@ -133,7 +157,7 @@ func (r *AppsecRunner) processRequest(tx appsec.ExtendedTransaction, request *ap
 		//FIXME: should we abort here ?
 	}
 
-	request.Tx.ProcessConnection(request.RemoteAddr, 0, "", 0)
+	request.Tx.ProcessConnection(request.ClientIP, 0, "", 0)
 
 	for k, v := range request.Args {
 		for _, vv := range v {
@@ -165,7 +189,7 @@ func (r *AppsecRunner) processRequest(tx appsec.ExtendedTransaction, request *ap
 		return nil
 	}
 
-	if request.Body != nil && len(request.Body) > 0 {
+	if len(request.Body) > 0 {
 		in, _, err = request.Tx.WriteRequestBody(request.Body)
 		if err != nil {
 			r.logger.Errorf("unable to write request body : %s", err)
@@ -177,7 +201,6 @@ func (r *AppsecRunner) processRequest(tx appsec.ExtendedTransaction, request *ap
 	}
 
 	in, err = request.Tx.ProcessRequestBody()
-
 	if err != nil {
 		r.logger.Errorf("unable to process request body : %s", err)
 		return err
@@ -213,6 +236,12 @@ func (r *AppsecRunner) ProcessOutOfBandRules(request *appsec.ParsedRequest) erro
 }
 
 func (r *AppsecRunner) handleInBandInterrupt(request *appsec.ParsedRequest) {
+
+	if allowed, reason := r.appsecAllowlistsClient.IsAllowlisted(request.ClientIP); allowed {
+		r.logger.Infof("%s is allowlisted by %s, skipping", request.ClientIP, reason)
+		return
+	}
+
 	//create the associated event for crowdsec itself
 	evt, err := EventFromRequest(request, r.Labels)
 	if err != nil {
@@ -226,7 +255,8 @@ func (r *AppsecRunner) handleInBandInterrupt(request *appsec.ParsedRequest) {
 	if in := request.Tx.Interruption(); in != nil {
 		r.logger.Debugf("inband rules matched : %d", in.RuleID)
 		r.AppsecRuntime.Response.InBandInterrupt = true
-		r.AppsecRuntime.Response.HTTPResponseCode = r.AppsecRuntime.Config.BlockedHTTPCode
+		r.AppsecRuntime.Response.BouncerHTTPResponseCode = r.AppsecRuntime.Config.BouncerBlockedHTTPCode
+		r.AppsecRuntime.Response.UserHTTPResponseCode = r.AppsecRuntime.Config.UserBlockedHTTPCode
 		r.AppsecRuntime.Response.Action = r.AppsecRuntime.DefaultRemediation
 
 		if _, ok := r.AppsecRuntime.RemediationById[in.RuleID]; ok {
@@ -247,12 +277,14 @@ func (r *AppsecRunner) handleInBandInterrupt(request *appsec.ParsedRequest) {
 
 		// Should the in band match trigger an overflow ?
 		if r.AppsecRuntime.Response.SendAlert {
-			appsecOvlfw, err := AppsecEventGeneration(evt)
+			appsecOvlfw, err := AppsecEventGeneration(evt, request.HTTPRequest)
 			if err != nil {
 				r.logger.Errorf("unable to generate appsec event : %s", err)
 				return
 			}
-			r.outChan <- *appsecOvlfw
+			if appsecOvlfw != nil {
+				r.outChan <- *appsecOvlfw
+			}
 		}
 
 		// Should the in band match trigger an event ?
@@ -264,6 +296,12 @@ func (r *AppsecRunner) handleInBandInterrupt(request *appsec.ParsedRequest) {
 }
 
 func (r *AppsecRunner) handleOutBandInterrupt(request *appsec.ParsedRequest) {
+
+	if allowed, reason := r.appsecAllowlistsClient.IsAllowlisted(request.ClientIP); allowed {
+		r.logger.Infof("%s is allowlisted by %s, skipping", request.ClientIP, reason)
+		return
+	}
+
 	evt, err := EventFromRequest(request, r.Labels)
 	if err != nil {
 		//let's not interrupt the pipeline for this
@@ -289,7 +327,7 @@ func (r *AppsecRunner) handleOutBandInterrupt(request *appsec.ParsedRequest) {
 
 		// Should the match trigger an overflow ?
 		if r.AppsecRuntime.Response.SendAlert {
-			appsecOvlfw, err := AppsecEventGeneration(evt)
+			appsecOvlfw, err := AppsecEventGeneration(evt, request.HTTPRequest)
 			if err != nil {
 				r.logger.Errorf("unable to generate appsec event : %s", err)
 				return
@@ -359,7 +397,6 @@ func (r *AppsecRunner) handleRequest(request *appsec.ParsedRequest) {
 	// time spent to process inband AND out of band rules
 	globalParsingElapsed := time.Since(startGlobalParsing)
 	AppsecGlobalParsingHistogram.With(prometheus.Labels{"source": request.RemoteAddrNormalized, "appsec_engine": request.AppsecEngine}).Observe(globalParsingElapsed.Seconds())
-
 }
 
 func (r *AppsecRunner) Run(t *tomb.Tomb) error {
